@@ -22,11 +22,11 @@ dirhist on
 
 ```
 dirhist                      show this directory's history
-dirhist history [-n N] [dir] show this directory's history, or dir's
+dirhist history [-n N] [dir|N] show this directory's history, or dir's
 dirhist on|start             record commands run in this directory
 dirhist stop|off             stop recording and keep its commands
-dirhist rm|remove [dir]      remove dir from the list and delete its commands
-dirhist list|ls              list directories, marked on or off
+dirhist rm|remove [dir|N]    remove dir from the list and delete its commands
+dirhist list|ls              list numbered directories, marked on or off
 dirhist status               show on or off, the history file, and the config
 dirhist grep [-a] PAT        search this directory, or every directory with -a
 dirhist themes [name]        show a sample of each color theme
@@ -40,6 +40,8 @@ dirhist prune                drop recorded directories that are gone
 `disable` is the same as `stop`. Tab completion fills commands, theme names, and recorded directories.
 
 `on` means the directory is still recorded. `off` means recording has stopped and its commands are still kept. `remove` deletes those commands.
+
+`dirhist list` prints a number in front of each directory. That number stands in for the path: `dirhist history 1` shows directory 1, and `dirhist rm 1` removes it. `dirhist history -n 5 1` shows the newest 5 commands from directory 1.
 
 ## Files
 
@@ -89,4 +91,4 @@ max_lines = 50
 
 Help usage lines use solarized dark, like `bat`. Descriptions stay the terminal color. Set `NO_COLOR` to leave help plain.
 
-Ignore patterns match one whole command. `*` matches any text. Patterns under `[global]` apply everywhere. A `[/absolute/path]` or `[dir /absolute/path]` section applies only there. Use the physical path.
+A pattern ignores that command and anything after it. `ls` ignores `ls`, `ls -alh`, and `ls /tmp`. It does not ignore `lsblk`. `*` still matches any text. Patterns under `[global]` apply everywhere. A `[/absolute/path]` or `[dir /absolute/path]` section applies only there. Use the physical path.

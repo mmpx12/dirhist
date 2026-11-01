@@ -537,6 +537,17 @@ _dirhist_is_max_lines() {
   [[ "$key" == max_lines ]]
 }
 
+# Return 0 when pat ignores cmd.
+# `ls` ignores `ls`, `ls -alh`, and `ls /tmp`. It does not ignore `lsblk`.
+# * and ? still match any text.
+# shellcheck disable=SC2053
+_dirhist_pattern_matches() {
+  local cmd="$1" pat="$2"
+  [[ "$cmd" == $pat ]] && return 0
+  [[ "$cmd" == "$pat "* ]] && return 0
+  return 1
+}
+
 # Return 0 when cmd must not be written to the shared history.
 _dirhist_ignored() {
   local dir="$1" cmd="$2" line trimmed header scope=""
@@ -551,10 +562,7 @@ _dirhist_ignored() {
     _dirhist_is_max_lines "$trimmed" && continue
     # Lines before the first section are global.
     if [[ -z "$scope" || "$scope" == "global" || "$scope" == "$dir" ]]; then
-      # shellcheck disable=SC2053 # Patterns are globs, like HISTIGNORE.
-      if [[ "$cmd" == $trimmed ]]; then
-        return 0
-      fi
+      _dirhist_pattern_matches "$cmd" "$trimmed" && return 0
     fi
   done < "$DIRHIST_CONFIG"
   return 1
@@ -595,11 +603,12 @@ _dirhist_ensure_config() {
 # A max_lines line in a directory section overwrites [options].
 # off or 0 in that section means no limit for that directory.
 #
-# Ignore patterns match one whole command. * matches any text.
+# A pattern ignores that command and anything after it. ls ignores ls -alh.
+# * still matches any text. ls does not ignore lsblk.
 # Patterns under [global] are ignored in every recorded directory.
 # A [/absolute/path] or [dir /absolute/path] section applies only there.
 # Use the physical path (pwd -P). Add a rule with:
-#   dirhist ignore 'git status'
+#   dirhist ignore ls
 #   dirhist ignore -g 'echo *'
 
 [options]
@@ -882,6 +891,8 @@ _dirhist_history_cmd() {
   done
   if [[ $# -eq 0 ]]; then
     dir=$(_dirhist_here) || return 1
+  elif [[ $# -eq 1 ]] && _dirhist_is_index "$1"; then
+    dir=$(_dirhist_dir_by_number "$1") || return 1
   else
     dir=$(_dirhist_resolve_dir "$*") || return 1
   fi
@@ -1123,12 +1134,12 @@ _dirhist_help_row() {
 
 _dirhist_help() {
   _dirhist_help_row "dirhist" "show this directory's history"
-  _dirhist_help_row "dirhist history [-n N] [dir]" "show this directory's history, or dir's"
+  _dirhist_help_row "dirhist history [-n N] [dir|N]" "show this directory's history, or dir's"
   _dirhist_help_row "" "-n N shows the newest N commands"
   _dirhist_help_row "dirhist on|start" "record commands run in this directory"
   _dirhist_help_row "dirhist stop|off" "stop recording and keep its commands"
-  _dirhist_help_row "dirhist rm|remove [dir]" "remove dir from the list and delete its commands"
-  _dirhist_help_row "dirhist list|ls" "list directories, marked on or off"
+  _dirhist_help_row "dirhist rm|remove [dir|N]" "remove dir from the list and delete its commands"
+  _dirhist_help_row "dirhist list|ls" "list numbered directories, marked on or off"
   _dirhist_help_row "dirhist status" "show on or off, the history file, and the config"
   _dirhist_help_row "dirhist grep [-a] PAT" "search this directory's history"
   _dirhist_help_row "" "-a searches every directory"
@@ -1142,6 +1153,7 @@ _dirhist_help() {
   _dirhist_help_row "dirhist prune" "drop recorded directories that are gone"
   builtin printf '\n'
   builtin printf '%s\n' "Recorded directories are listed in ~/.dirhist."
+  builtin printf '%s\n' "dirhist list prints a number for each one. history 1 and rm 1 use that number."
   builtin printf '%s\n' "Commands are appended to ~/.dirhist_history as soon as they run."
   builtin printf '%s\n' "Each directory's commands stay separate in that file. cd is included."
   builtin printf '%s\n' "A command the shell drops for a leading space is not recorded."
@@ -1151,7 +1163,8 @@ _dirhist_help() {
   builtin printf '%s\n' "theme is crimson, ocean, forest, amber, or violet. Default is crimson."
   builtin printf '%s\n' "Tab completion fills commands, theme names, and recorded directories."
   builtin printf '%s\n' "Ignore rules are stored in the config file."
-  builtin printf '%s\n' "A pattern matches the whole command. * matches any text."
+  builtin printf '%s\n' "A pattern ignores that command and anything after it. ls ignores ls -alh."
+  builtin printf '%s\n' "* still matches any text. ls does not ignore lsblk."
   builtin printf '%s\n' "Prune removes a directory from the list. Its old commands stay in the history."
   builtin printf '%s\n' "rm|remove deletes that directory's commands. stop|off keeps them. disable is the same as stop."
 }
@@ -1269,41 +1282,79 @@ _dirhist_remove_cmd() {
   local dir
   if [[ $# -eq 0 ]]; then
     dir=$(_dirhist_here) || return 1
+  elif [[ $# -eq 1 ]] && _dirhist_is_index "$1"; then
+    dir=$(_dirhist_dir_by_number "$1") || return 1
   else
     dir=$(_dirhist_resolve_remove_dir "$*") || return 1
   fi
   _dirhist_forget "$dir"
 }
 
-_dirhist_list() {
-  local line use_color=0 dir
-  local -a ons=() offs=()
+# A list number is 1, 2, 3, ... with no leading zero.
+_dirhist_is_index() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+# Fill _dirhist_dirs and _dirhist_dir_on in the same order as dirhist list.
+# on directories come from the registry. off directories still have commands.
+_dirhist_load_dir_index() {
+  local line dir
   local -A seen=()
-  _dirhist_ensure_home || return 1
-  if [[ -t 1 ]] && _dirhist_option_on status_color; then
-    use_color=1
-  fi
+  _dirhist_dirs=()
+  _dirhist_dir_on=()
   if [[ -f "$DIRHIST_REGISTRY" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       [[ -n "$line" ]] || continue
-      ons+=("$line")
+      _dirhist_dirs+=("$line")
+      _dirhist_dir_on+=("on")
       seen["$line"]=1
     done < "$DIRHIST_REGISTRY"
   fi
-  {
-    flock -s 9 || true
+  if [[ -f "$DIRHIST_HISTORY" && -e "$DIRHIST_LOCK" ]]; then
+    {
+      flock -s 9 || true
+      _dirhist_load_entries
+    } 9>>"$DIRHIST_LOCK"
+  elif [[ -f "$DIRHIST_HISTORY" ]]; then
     _dirhist_load_entries
-  } 9>>"$DIRHIST_LOCK"
+  else
+    _dirhist_e_dir=()
+  fi
   for dir in "${_dirhist_e_dir[@]}"; do
     [[ -n "$dir" && -z "${seen[$dir]:-}" ]] || continue
     seen["$dir"]=1
-    offs+=("$dir")
+    _dirhist_dirs+=("$dir")
+    _dirhist_dir_on+=("off")
   done
-  for dir in "${ons[@]}"; do
-    _dirhist_status_line on "$dir" "$use_color"
-  done
-  for dir in "${offs[@]}"; do
-    _dirhist_status_line off "$dir" "$use_color"
+}
+
+# Print the path for a dirhist list number.
+_dirhist_dir_by_number() {
+  local n="$1"
+  _dirhist_load_dir_index || return 1
+  if (( n < 1 || n > ${#_dirhist_dirs[@]} )); then
+    builtin printf 'dirhist: no directory numbered %s\n' "$n" >&2
+    return 1
+  fi
+  builtin printf '%s\n' "${_dirhist_dirs[$((n - 1))]}"
+}
+
+_dirhist_list() {
+  local i n width=1 label use_color=0
+  _dirhist_ensure_home || return 1
+  _dirhist_load_dir_index || return 1
+  if [[ -t 1 ]] && _dirhist_option_on status_color; then
+    use_color=1
+  fi
+  if (( ${#_dirhist_dirs[@]} > 0 )); then
+    width=${#_dirhist_dirs[@]}
+    width=${#width}
+  fi
+  for i in "${!_dirhist_dirs[@]}"; do
+    n=$((i + 1))
+    label="${_dirhist_dir_on[i]}"
+    builtin printf '%*d  ' "$width" "$n"
+    _dirhist_status_line "$label" "${_dirhist_dirs[i]}" "$use_color"
   done
 }
 
@@ -1448,6 +1499,18 @@ _dirhist_complete_dirs() {
       [[ -n "$line" ]] && COMPREPLY+=("$line")
     done < <(compgen -d -- "$cur")
   fi
+  _dirhist_complete_numbers "$cur"
+}
+
+_dirhist_complete_numbers() {
+  local cur="$1" i n
+  _dirhist_load_dir_index || return 0
+  for i in "${!_dirhist_dirs[@]}"; do
+    n=$((i + 1))
+    if [[ -z "$cur" || "$n" == "$cur"* ]]; then
+      COMPREPLY+=("$n")
+    fi
+  done
 }
 
 _dirhist_complete() {
