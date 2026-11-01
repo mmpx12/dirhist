@@ -1,0 +1,92 @@
+# dirhist
+
+Per-directory command history for bash. Record only the directories you choose. Each command is appended as it runs, not when the shell exits. Global bash history is left unchanged.
+
+## Install
+
+`dirhist` has to be sourced. Add this to `~/.bashrc`:
+
+```bash
+source /path/to/dirhist.bash
+```
+
+Open a new shell, then start recording the current directory:
+
+```bash
+dirhist on
+```
+
+`dirhist start` does the same. With no arguments, `dirhist` prints this directory's history.
+
+## Commands
+
+```
+dirhist                      show this directory's history
+dirhist history [-n N] [dir] show this directory's history, or dir's
+dirhist on|start             record commands run in this directory
+dirhist stop|off             stop recording and keep its commands
+dirhist rm|remove [dir]      remove dir from the list and delete its commands
+dirhist list|ls              list directories, marked on or off
+dirhist status               show on or off, the history file, and the config
+dirhist grep [-a] PAT        search this directory, or every directory with -a
+dirhist themes [name]        show a sample of each color theme
+dirhist init                 create the config file if it is missing
+dirhist ignore PAT           ignore PAT in this directory
+dirhist ignore -g PAT        ignore PAT in every recorded directory
+dirhist ignore -d PAT        stop ignoring PAT
+dirhist prune                drop recorded directories that are gone
+```
+
+`disable` is the same as `stop`. Tab completion fills commands, theme names, and recorded directories.
+
+`on` means the directory is still recorded. `off` means recording has stopped and its commands are still kept. `remove` deletes those commands.
+
+## Files
+
+| Path | Purpose |
+| --- | --- |
+| `~/.dirhist` | Directories currently recording, one physical path per line |
+| `~/.dirhist_history` | Commands for every directory |
+| `~/.dirhist.lock` | Empty lock so two shells cannot write the history at once |
+| `~/.config/dirhist/config` | Options and ignore rules |
+
+History entries look like this:
+
+```
+@@ /physical/path
+[2026-11-01]=[12:00:00]──► echo hello
+```
+
+Paths are physical (`pwd -P`). `cd` is stored for the directory you leave, and also for the directory you enter when that one is recorded. A command the shell itself drops because of a leading space is not recorded. Names listed in `HISTIGNORE`, including aliases such as `ls`, still are.
+
+## Config
+
+`dirhist init` creates `~/.config/dirhist/config` when it is missing.
+
+```ini
+[options]
+date = on
+color = on
+status_color = on
+theme = crimson
+max_lines = 500
+
+[global]
+echo *
+
+[/home/you/project]
+pwd
+max_lines = 50
+```
+
+`date`, `color`, and `status_color` accept `on` or `off` and default to `on`.
+
+- `date` writes the `[YYYY-MM-DD]=[HH:MM:SS]──►` prefix.
+- `color` colors history. The whole command uses the selected theme.
+- `status_color` colors the `on`, `off`, `history`, and `config` labels. Paths stay plain. `on` is green, `off` is red, and the other labels are solarized dark.
+- `theme` is `crimson`, `ocean`, `forest`, `amber`, or `violet`. The default is `crimson`. The old names `history` and `ember` still select `crimson`.
+- `max_lines` is how many commands to keep per directory. Unset means no limit. A `max_lines` line in a directory section overwrites `[options]` for that directory. `off` or `0` there means no limit.
+
+Help usage lines use solarized dark, like `bat`. Descriptions stay the terminal color. Set `NO_COLOR` to leave help plain.
+
+Ignore patterns match one whole command. `*` matches any text. Patterns under `[global]` apply everywhere. A `[/absolute/path]` or `[dir /absolute/path]` section applies only there. Use the physical path.
