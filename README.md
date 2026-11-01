@@ -35,6 +35,7 @@ dirhist ignore PAT           ignore PAT in this directory
 dirhist ignore -g PAT        ignore PAT in every recorded directory
 dirhist ignore -d PAT        stop ignoring PAT
 dirhist prune                drop recorded directories that are gone
+dirhist clean [-n N] [dir|N] delete this directory's commands, or dir's
 dirhist version|-V|--version    print the version (v1.0.0)
 ```
 
@@ -42,7 +43,9 @@ dirhist version|-V|--version    print the version (v1.0.0)
 
 `on` means the directory is still recorded. `off` means recording has stopped and its commands are still kept. `remove` deletes those commands.
 
-`dirhist list` prints a number in front of each directory. That number stands in for the path: `dirhist history 1`, `dirhist on 1`, `dirhist off 1`, and `dirhist rm 1` use it. With no number, `on` and `off` use the current directory. `dirhist history -n 5 1` shows the newest 5 commands from directory 1.
+`dirhist list` prints a number in front of each directory. That number stands in for the path: `dirhist history 1`, `dirhist on 1`, `dirhist off 1`, `dirhist clean 1`, and `dirhist rm 1` use it. With no number, `on`, `off`, and `clean` use the current directory. `dirhist history -n 5 1` shows the newest 5 commands from directory 1.
+
+`dirhist clean` deletes the current directory's commands. `dirhist clean ~/src/project` deletes that directory's commands. `dirhist clean -n 50` keeps the newest 50 there. Other directories stay.
 
 `dirhist grep -v PAT` without another PAT only excludes commands that contain PAT. `dirhist grep help -v dirhist` and `dirhist grep -v dirhist help` both keep commands that contain `help` and drop commands that contain `dirhist`. `-v` can be repeated. `-a` searches every recorded directory.
 

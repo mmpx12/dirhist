@@ -25,7 +25,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   exit 1
 fi
 
-DIRHIST_VERSION=v1.0.0
+DIRHIST_VERSION=v1.0.1
 DIRHIST_REGISTRY="${DIRHIST_REGISTRY:-$HOME/.dirhist}"
 DIRHIST_HISTORY="${DIRHIST_HISTORY:-$HOME/.dirhist_history}"
 DIRHIST_LOCK="${DIRHIST_LOCK:-$HOME/.dirhist.lock}"
@@ -977,6 +977,91 @@ _dirhist_grep_cmd() {
   } 9>>"$DIRHIST_LOCK"
 }
 
+# Delete one directory's commands. No directory means the current one.
+# -n N keeps that directory's newest N commands.
+_dirhist_clean_cmd() {
+  local keep="" dir total=0 drop=0 kept=0 seen=0 i tmp
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -n)
+        if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
+          builtin printf 'dirhist: clean -n needs a number\n' >&2
+          return 2
+        fi
+        keep=$2
+        shift 2
+        ;;
+      -n*)
+        keep="${1#-n}"
+        if [[ ! "$keep" =~ ^[0-9]+$ ]]; then
+          builtin printf 'dirhist: clean -n needs a number\n' >&2
+          return 2
+        fi
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        builtin printf 'dirhist: unknown clean option: %s\n' "$1" >&2
+        return 2
+        ;;
+      *) break ;;
+    esac
+  done
+  if [[ $# -eq 0 ]]; then
+    dir=$(_dirhist_here) || return 1
+  elif [[ $# -eq 1 ]] && _dirhist_is_index "$1"; then
+    dir=$(_dirhist_dir_by_number "$1") || return 1
+  else
+    dir=$(_dirhist_resolve_remove_dir "$*") || return 1
+  fi
+  _dirhist_ensure_home || return 1
+  {
+    flock -x 9 || true
+    _dirhist_load_entries
+    for i in "${!_dirhist_e_dir[@]}"; do
+      [[ "${_dirhist_e_dir[i]}" == "$dir" ]] && total=$((total + 1))
+    done
+    if (( total == 0 )); then
+      builtin printf 'dirhist: no commands to remove from %s\n' "$dir"
+      return 0
+    fi
+    if [[ -z "$keep" || "$keep" -eq 0 ]]; then
+      drop=$total
+    elif (( keep < total )); then
+      drop=$((total - keep))
+    fi
+    kept=$((total - drop))
+    if (( drop == 0 )); then
+      builtin printf 'dirhist: kept %s commands in %s\n' "$kept" "$dir"
+      return 0
+    fi
+    tmp=$(mktemp "$(dirname -- "$DIRHIST_HISTORY")/.dirhist.XXXXXX") || return 1
+    for i in "${!_dirhist_e_dir[@]}"; do
+      if [[ "${_dirhist_e_dir[i]}" == "$dir" ]]; then
+        if (( seen < drop )); then
+          seen=$((seen + 1))
+          continue
+        fi
+      fi
+      _dirhist_write_entry "$tmp" "${_dirhist_e_dir[i]}" \
+        "${_dirhist_e_date[i]}" "${_dirhist_e_time[i]}" "${_dirhist_e_cmd[i]}"
+    done
+    mv -f -- "$tmp" "$DIRHIST_HISTORY" || {
+      rm -f -- "$tmp"
+      return 1
+    }
+    chmod 600 "$DIRHIST_HISTORY" 2>/dev/null || true
+    if (( kept == 0 )); then
+      builtin printf 'dirhist: removed %s commands from %s\n' "$total" "$dir"
+    else
+      builtin printf 'dirhist: removed %s commands from %s, kept %s\n' "$drop" "$dir" "$kept"
+    fi
+  } 9>>"$DIRHIST_LOCK"
+}
+
 _dirhist_prune_cmd() {
   local tmp line removed=0
   if [[ $# -gt 0 ]]; then
@@ -1196,10 +1281,12 @@ _dirhist_help() {
   _dirhist_help_row "dirhist ignore -g PAT" "ignore PAT in every recorded directory"
   _dirhist_help_row "dirhist ignore -g -d PAT" "stop ignoring PAT everywhere"
   _dirhist_help_row "dirhist prune" "drop recorded directories that are gone"
-  _dirhist_help_row "dirhist version|-V|--version" "print ${DIRHIST_VERSION}"
+  _dirhist_help_row "dirhist clean [-n N] [dir|N]" "delete this directory's commands, or dir's"
+  _dirhist_help_row "" "-n N keeps the newest N commands"
+  _dirhist_help_row "dirhist version|-V|--version" "print version"
   builtin printf '\n'
   builtin printf '%s\n' "Recorded directories are listed in ~/.dirhist."
-  builtin printf '%s\n' "dirhist list prints a number for each one. history, on, off, and rm use that number."
+  builtin printf '%s\n' "dirhist list prints a number for each one. history, on, off, clean, and rm use that number."
   builtin printf '%s\n' "on and off with no number use the current directory."
   builtin printf '%s\n' "Commands are appended to ~/.dirhist_history as soon as they run."
   builtin printf '%s\n' "Each directory's commands stay separate in that file. cd is included."
@@ -1213,6 +1300,8 @@ _dirhist_help() {
   builtin printf '%s\n' "A pattern ignores that command and anything after it. ls ignores ls -alh."
   builtin printf '%s\n' "* still matches any text. ls does not ignore lsblk."
   builtin printf '%s\n' "Prune removes a directory from the list. Its old commands stay in the history."
+  builtin printf '%s\n' "clean deletes this directory's commands. A path or a list number chooses another directory."
+  builtin printf '%s\n' "clean -n N keeps the newest N commands there. Other directories stay."
   builtin printf '%s\n' "rm|remove deletes that directory's commands. stop|off keeps them. disable is the same as stop."
 }
 
@@ -1473,6 +1562,9 @@ dirhist() {
     prune)
       _dirhist_prune_cmd "$@"
       ;;
+    clean)
+      _dirhist_clean_cmd "$@"
+      ;;
     theme|themes)
       _dirhist_themes_cmd "$@"
       ;;
@@ -1596,7 +1688,7 @@ _dirhist_complete() {
   fi
 
   if (( cword <= 1 )); then
-    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune help version -V --version" "$cur"
+    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune clean help version -V --version" "$cur"
     return 0
   fi
 
@@ -1620,6 +1712,9 @@ _dirhist_complete() {
       if [[ -z "$cur" || "$cur" == -* ]]; then
         _dirhist_complete_words "-g --global -d --delete" "$cur"
       fi
+      ;;
+    clean)
+      _dirhist_complete_history
       ;;
     version|-V|--version)
       return 0
