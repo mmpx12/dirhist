@@ -1178,8 +1178,8 @@ _dirhist_help() {
   _dirhist_help_row "dirhist" "show this directory's history"
   _dirhist_help_row "dirhist history [-n N] [dir|N]" "show this directory's history, or dir's"
   _dirhist_help_row "" "-n N shows the newest N commands"
-  _dirhist_help_row "dirhist on|start" "record commands run in this directory"
-  _dirhist_help_row "dirhist stop|off" "stop recording and keep its commands"
+  _dirhist_help_row "dirhist on|start [N]" "record this directory, or directory N"
+  _dirhist_help_row "dirhist stop|off [N]" "stop recording this directory, or directory N, and keep its commands"
   _dirhist_help_row "dirhist rm|remove [dir|N]" "remove dir from the list and delete its commands"
   _dirhist_help_row "dirhist list|ls" "list numbered directories, marked on or off"
   _dirhist_help_row "dirhist status" "show on or off, the history file, and the config"
@@ -1199,7 +1199,8 @@ _dirhist_help() {
   _dirhist_help_row "dirhist version|-V|--version" "print ${DIRHIST_VERSION}"
   builtin printf '\n'
   builtin printf '%s\n' "Recorded directories are listed in ~/.dirhist."
-  builtin printf '%s\n' "dirhist list prints a number for each one. history 1 and rm 1 use that number."
+  builtin printf '%s\n' "dirhist list prints a number for each one. history, on, off, and rm use that number."
+  builtin printf '%s\n' "on and off with no number use the current directory."
   builtin printf '%s\n' "Commands are appended to ~/.dirhist_history as soon as they run."
   builtin printf '%s\n' "Each directory's commands stay separate in that file. cd is included."
   builtin printf '%s\n' "A command the shell drops for a leading space is not recorded."
@@ -1324,6 +1325,22 @@ _dirhist_forget() {
   } 9>>"$DIRHIST_LOCK"
 }
 
+# No argument is the current directory. One argument is a list number.
+_dirhist_on_off_dir() {
+  local cmd="$1"
+  shift
+  if [[ $# -eq 0 ]]; then
+    _dirhist_here
+    return
+  fi
+  if [[ $# -eq 1 ]] && _dirhist_is_index "$1"; then
+    _dirhist_dir_by_number "$1"
+    return
+  fi
+  builtin printf 'dirhist: %s takes a directory number, or none for this directory\n' "$cmd" >&2
+  return 2
+}
+
 _dirhist_remove_cmd() {
   local dir
   if [[ $# -eq 0 ]]; then
@@ -1430,11 +1447,11 @@ dirhist() {
       _dirhist_history_cmd "$@"
       ;;
     on|start)
-      here=$(_dirhist_here) || return 1
+      here=$(_dirhist_on_off_dir "$op" "$@") || return
       _dirhist_add "$here"
       ;;
     off|disable|stop)
-      here=$(_dirhist_here) || return 1
+      here=$(_dirhist_on_off_dir "$op" "$@") || return
       _dirhist_remove "$here"
       ;;
     rm|remove)
@@ -1587,7 +1604,7 @@ _dirhist_complete() {
     history)
       _dirhist_complete_history
       ;;
-    rm|remove)
+    rm|remove|on|start|off|stop|disable)
       (( cword == 2 )) || return 0
       _dirhist_complete_dirs "$cur"
       compopt -o filenames 2>/dev/null || true

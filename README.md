@@ -23,8 +23,8 @@ dirhist on
 ```
 dirhist                      show this directory's history
 dirhist history [-n N] [dir|N] show this directory's history, or dir's
-dirhist on|start             record commands run in this directory
-dirhist stop|off             stop recording and keep its commands
+dirhist on|start [N]         record this directory, or directory N
+dirhist stop|off [N]         stop recording this directory, or directory N, and keep its commands
 dirhist rm|remove [dir|N]    remove dir from the list and delete its commands
 dirhist list|ls              list numbered directories, marked on or off
 dirhist status               show on or off, the history file, and the config
@@ -42,7 +42,7 @@ dirhist version|-V|--version    print the version (v1.0.0)
 
 `on` means the directory is still recorded. `off` means recording has stopped and its commands are still kept. `remove` deletes those commands.
 
-`dirhist list` prints a number in front of each directory. That number stands in for the path: `dirhist history 1` shows directory 1, and `dirhist rm 1` removes it. `dirhist history -n 5 1` shows the newest 5 commands from directory 1.
+`dirhist list` prints a number in front of each directory. That number stands in for the path: `dirhist history 1`, `dirhist on 1`, `dirhist off 1`, and `dirhist rm 1` use it. With no number, `on` and `off` use the current directory. `dirhist history -n 5 1` shows the newest 5 commands from directory 1.
 
 `dirhist grep -v PAT` without another PAT only excludes commands that contain PAT. `dirhist grep help -v dirhist` and `dirhist grep -v dirhist help` both keep commands that contain `help` and drop commands that contain `dirhist`. `-v` can be repeated. `-a` searches every recorded directory.
 
