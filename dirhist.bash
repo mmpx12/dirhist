@@ -25,6 +25,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   exit 1
 fi
 
+DIRHIST_VERSION=v1.0.0
 DIRHIST_REGISTRY="${DIRHIST_REGISTRY:-$HOME/.dirhist}"
 DIRHIST_HISTORY="${DIRHIST_HISTORY:-$HOME/.dirhist_history}"
 DIRHIST_LOCK="${DIRHIST_LOCK:-$HOME/.dirhist.lock}"
@@ -186,14 +187,16 @@ _dirhist_print_entry() {
 
 # $1 directory filter, empty for every directory
 # $2 newest N, empty for all
-# $3 substring, empty for all commands
+# $3 include substring, empty to keep every command
 # $4 1 to print a directory header when it changes
+# $5 name of an array of substrings to skip. Omit it to skip nothing.
 # Return 1 when nothing is selected.
 _dirhist_render() {
   local filter="$1" limit="$2" pattern="$3" headers="$4"
-  local i d theme use_color=0 pos total start k last=""
-  local -a pick=() pick_n=()
+  local i d theme use_color=0 pos total start k last="" cmd ex skip
+  local -a pick=() pick_n=() _dh_no_ex=()
   local -A tally=()
+  local -n _dh_excludes="${5:-_dh_no_ex}"
   _dirhist_load_entries
   for i in "${!_dirhist_e_dir[@]}"; do
     d="${_dirhist_e_dir[i]}"
@@ -201,9 +204,18 @@ _dirhist_render() {
       continue
     fi
     tally["$d"]=$(( ${tally["$d"]:-0} + 1 ))
-    if [[ -n "$pattern" && "${_dirhist_e_cmd[i]}" != *"$pattern"* ]]; then
+    cmd="${_dirhist_e_cmd[i]}"
+    if [[ -n "$pattern" && "$cmd" != *"$pattern"* ]]; then
       continue
     fi
+    skip=0
+    for ex in "${_dh_excludes[@]}"; do
+      if [[ "$cmd" == *"$ex"* ]]; then
+        skip=1
+        break
+      fi
+    done
+    [[ "$skip" == 1 ]] && continue
     pick+=("$i")
     pick_n+=("${tally["$d"]}")
   done
@@ -900,34 +912,64 @@ _dirhist_history_cmd() {
 }
 
 _dirhist_grep_cmd() {
-  local all=0 dir pat
+  local all=0 dir pat="" word
+  local -a excludes=() includes=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -a|--all) all=1; shift ;;
-      --) shift; break ;;
+      -a|--all)
+        all=1
+        shift
+        ;;
+      -v|--invert-match|-av|-va)
+        [[ "$1" == -av || "$1" == -va ]] && all=1
+        shift
+        if [[ $# -gt 0 && "$1" == "--" ]]; then
+          shift
+        fi
+        if [[ $# -eq 0 ]]; then
+          builtin printf 'dirhist: grep -v needs a pattern\n' >&2
+          return 2
+        fi
+        excludes+=("$1")
+        shift
+        ;;
+      --)
+        shift
+        includes+=("$@")
+        break
+        ;;
       -*)
         builtin printf 'dirhist: unknown grep option: %s\n' "$1" >&2
         return 2
         ;;
-      *) break ;;
+      *)
+        includes+=("$1")
+        shift
+        ;;
     esac
   done
-  if [[ $# -eq 0 ]]; then
+  if [[ ${#includes[@]} -eq 0 && ${#excludes[@]} -eq 0 ]]; then
     builtin printf 'dirhist: grep needs a pattern\n' >&2
     return 2
   fi
-  pat="$*"
+  for word in "${includes[@]}"; do
+    if [[ -z "$pat" ]]; then
+      pat="$word"
+    else
+      pat+=" $word"
+    fi
+  done
   _dirhist_ensure_home || return 1
   {
     flock -s 9 || true
     if [[ "$all" == 1 ]]; then
-      if ! _dirhist_render "" "" "$pat" 1; then
+      if ! _dirhist_render "" "" "$pat" 1 excludes; then
         builtin printf 'dirhist: no matches\n' >&2
         return 1
       fi
     else
       dir=$(_dirhist_here) || return 1
-      if ! _dirhist_render "$dir" "" "$pat" 0; then
+      if ! _dirhist_render "$dir" "" "$pat" 0 excludes; then
         builtin printf 'dirhist: no matches\n' >&2
         return 1
       fi
@@ -1141,8 +1183,11 @@ _dirhist_help() {
   _dirhist_help_row "dirhist rm|remove [dir|N]" "remove dir from the list and delete its commands"
   _dirhist_help_row "dirhist list|ls" "list numbered directories, marked on or off"
   _dirhist_help_row "dirhist status" "show on or off, the history file, and the config"
-  _dirhist_help_row "dirhist grep [-a] PAT" "search this directory's history"
-  _dirhist_help_row "" "-a searches every directory"
+  _dirhist_help_row "dirhist grep [-a] [-v PAT] [PAT]" "search this directory's history"
+  _dirhist_help_row "" "-a searches every directory."
+  _dirhist_help_row "" "-v PAT without another PAT only excludes PAT"
+  _dirhist_help_row "" "PAT keeps commands that contain it."
+  _dirhist_help_row "" "The flags and PAT can be in either order"
   _dirhist_help_row "dirhist themes [name]" "show a sample of each color theme"
   _dirhist_help_row "dirhist init" "create the config file if it is missing"
   _dirhist_help_row "dirhist ignore" "show ignore rules for this directory"
@@ -1151,6 +1196,7 @@ _dirhist_help() {
   _dirhist_help_row "dirhist ignore -g PAT" "ignore PAT in every recorded directory"
   _dirhist_help_row "dirhist ignore -g -d PAT" "stop ignoring PAT everywhere"
   _dirhist_help_row "dirhist prune" "drop recorded directories that are gone"
+  _dirhist_help_row "dirhist version|-V|--version" "print ${DIRHIST_VERSION}"
   builtin printf '\n'
   builtin printf '%s\n' "Recorded directories are listed in ~/.dirhist."
   builtin printf '%s\n' "dirhist list prints a number for each one. history 1 and rm 1 use that number."
@@ -1423,6 +1469,13 @@ dirhist() {
     help|-h|--help)
       _dirhist_help
       ;;
+    version|-V|--version)
+      if [[ $# -gt 0 ]]; then
+        builtin printf 'dirhist: version takes no arguments\n' >&2
+        return 2
+      fi
+      builtin printf 'dirhist %s\n' "$DIRHIST_VERSION"
+      ;;
     *)
       builtin printf 'dirhist: unknown argument: %s\n' "$op" >&2
       _dirhist_help >&2
@@ -1526,7 +1579,7 @@ _dirhist_complete() {
   fi
 
   if (( cword <= 1 )); then
-    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune help" "$cur"
+    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune help version -V --version" "$cur"
     return 0
   fi
 
@@ -1550,6 +1603,9 @@ _dirhist_complete() {
       if [[ -z "$cur" || "$cur" == -* ]]; then
         _dirhist_complete_words "-g --global -d --delete" "$cur"
       fi
+      ;;
+    version|-V|--version)
+      return 0
       ;;
   esac
 }
@@ -1588,19 +1644,13 @@ _dirhist_complete_history() {
 }
 
 _dirhist_complete_grep() {
-  local i=2 started=0
-  while (( i < cword )); do
-    case "${words[i]}" in
-      -a|--all) ;;
-      *) started=1 ;;
-    esac
-    i=$((i + 1))
-  done
-  if [[ "$started" == 1 ]]; then
-    return 0
-  fi
+  case "$prev" in
+    -v|--invert-match|-av|-va)
+      return 0
+      ;;
+  esac
   if [[ -z "$cur" || "$cur" == -* ]]; then
-    _dirhist_complete_words "-a --all" "$cur"
+    _dirhist_complete_words "-a --all -v --invert-match -av -va" "$cur"
   fi
 }
 

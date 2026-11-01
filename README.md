@@ -28,13 +28,14 @@ dirhist stop|off             stop recording and keep its commands
 dirhist rm|remove [dir|N]    remove dir from the list and delete its commands
 dirhist list|ls              list numbered directories, marked on or off
 dirhist status               show on or off, the history file, and the config
-dirhist grep [-a] PAT        search this directory, or every directory with -a
+dirhist grep [-a] [-v PAT] [PAT]  search this directory, or every directory with -a
 dirhist themes [name]        show a sample of each color theme
 dirhist init                 create the config file if it is missing
 dirhist ignore PAT           ignore PAT in this directory
 dirhist ignore -g PAT        ignore PAT in every recorded directory
 dirhist ignore -d PAT        stop ignoring PAT
 dirhist prune                drop recorded directories that are gone
+dirhist version|-V|--version    print the version (v1.0.0)
 ```
 
 `disable` is the same as `stop`. Tab completion fills commands, theme names, and recorded directories.
@@ -42,6 +43,8 @@ dirhist prune                drop recorded directories that are gone
 `on` means the directory is still recorded. `off` means recording has stopped and its commands are still kept. `remove` deletes those commands.
 
 `dirhist list` prints a number in front of each directory. That number stands in for the path: `dirhist history 1` shows directory 1, and `dirhist rm 1` removes it. `dirhist history -n 5 1` shows the newest 5 commands from directory 1.
+
+`dirhist grep -v PAT` without another PAT only excludes commands that contain PAT. `dirhist grep help -v dirhist` and `dirhist grep -v dirhist help` both keep commands that contain `help` and drop commands that contain `dirhist`. `-v` can be repeated. `-a` searches every recorded directory.
 
 ## Files
 
