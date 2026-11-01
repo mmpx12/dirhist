@@ -21,22 +21,30 @@ dirhist on
 ## Commands
 
 ```
-dirhist                      show this directory's history
-dirhist history [-n N] [dir|N] show this directory's history, or dir's
-dirhist on|start [N]         record this directory, or directory N
-dirhist stop|off [N]         stop recording this directory, or directory N, and keep its commands
-dirhist rm|remove [dir|N]    remove dir from the list and delete its commands
-dirhist list|ls              list numbered directories, marked on or off
-dirhist status               show on or off, the history file, and the config
-dirhist grep [-a] [-v PAT] [PAT]  search this directory, or every directory with -a
-dirhist themes [name]        show a sample of each color theme
-dirhist init                 create the config file if it is missing
-dirhist ignore PAT           ignore PAT in this directory
-dirhist ignore -g PAT        ignore PAT in every recorded directory
-dirhist ignore -d PAT        stop ignoring PAT
-dirhist prune                drop recorded directories that are gone
-dirhist clean [-n N] [dir|N] delete this directory's commands, or dir's
-dirhist version|-V|--version    print the version (v1.0.0)
+dirhist                            show this directory's history
+dirhist history [-n N] [dir|N]     show this directory's history, or dir's
+                                   -n N shows the newest N commands
+dirhist on|start [dir|N]           record this directory, or directory N
+dirhist off|stop [dir|N]           stop recording this directory, or directory N, and keep its commands
+dirhist rm|remove [dir|N]          remove dir from the list and delete its commands
+dirhist ls|list                    list numbered directories, marked on or off
+dirhist status                     show on or off, the history file, and the config
+dirhist grep [-a] [-v PAT] [PAT]   search this directory's history
+                                   -a searches every directory.
+                                   -v PAT without another PAT only excludes PAT
+                                   PAT keeps commands that contain it.
+                                   The flags and PAT can be in either order
+dirhist themes [name]              show a sample of each color theme
+dirhist init                       create the config file if it is missing
+dirhist ignore                     show ignore rules for this directory
+dirhist ignore PAT                 ignore PAT in this directory
+dirhist ignore -d PAT              stop ignoring PAT in this directory
+dirhist ignore -g PAT              ignore PAT in every recorded directory
+dirhist ignore -g -d PAT           stop ignoring PAT everywhere
+dirhist prune                      drop recorded directories that are gone
+dirhist clean [-n N] [dir|N]       delete this directory's commands, or dir's
+                                   -n N keeps the newest N commands
+dirhist version|-V|--version       print version
 ```
 
 `disable` is the same as `stop`. Tab completion fills commands, theme names, and recorded directories.
