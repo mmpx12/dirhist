@@ -22,15 +22,17 @@ dirhist on
 
 ```
 dirhist                            show this directory's history
-dirhist history [-n N] [dir|N]     show this directory's history, or dir's
+dirhist history [-u] [-n N] [dir|N] show this directory's history, or dir's
                                    -n N shows the newest N commands
+                                   -u prints each command once, with no number or date
 dirhist on|start [dir|N]           record this directory, or directory N
 dirhist off|stop [dir|N]           stop recording this directory, or directory N, and keep its commands
 dirhist rm|remove [dir|N]          remove dir from the list and delete its commands
 dirhist ls|list                    list numbered directories, marked on or off
 dirhist status                     show on or off, the history file, and the config
-dirhist grep [-a] [-v PAT] [PAT]   search this directory's history
+dirhist grep [-a] [-u] [-v PAT] [PAT] search this directory's history
                                    -a searches every directory.
+                                   -u prints each matching command once, with no number or date
                                    -v PAT without another PAT only excludes PAT
                                    PAT keeps commands that contain it.
                                    The flags and PAT can be in either order
@@ -55,11 +57,11 @@ Tab completion fills commands, theme names, and recorded directories.
 
 `on` means the directory is still recorded. `off` means recording has stopped and its commands are still kept. `remove` deletes those commands.
 
-`dirhist list` prints a number in front of each directory. That number stands in for the path: `dirhist history 1`, `dirhist on 1`, `dirhist off 1`, `dirhist clean 1`, and `dirhist rm 1` use it. With no number, `on`, `off`, and `clean` use the current directory. `dirhist history -n 5 1` shows the newest 5 commands from directory 1.
+`dirhist list` prints a number in front of each directory. That number stands in for the path: `dirhist history 1`, `dirhist on 1`, `dirhist off 1`, `dirhist clean 1`, and `dirhist rm 1` use it. With no number, `on`, `off`, and `clean` use the current directory. `dirhist history -n 5 1` shows the newest 5 commands from directory 1. `dirhist history -u` prints each command once and keeps the latest copy. The number and the date prefix are left off. `dirhist -u` does the same. `dirhist history -u -n 5` shows the newest 5 of those.
 
 `dirhist clean` deletes the current directory's commands. `dirhist clean ~/src/project` deletes that directory's commands. `dirhist clean -n 50` keeps the newest 50 there. Other directories stay.
 
-`dirhist grep -v PAT` without another PAT only excludes commands that contain PAT. `dirhist grep help -v dirhist` and `dirhist grep -v dirhist help` both keep commands that contain `help` and drop commands that contain `dirhist`. `-v` can be repeated. `-a` searches every recorded directory.
+`dirhist grep -v PAT` without another PAT only excludes commands that contain PAT. `dirhist grep help -v dirhist` and `dirhist grep -v dirhist help` both keep commands that contain `help` and drop commands that contain `dirhist`. `-v` can be repeated. `-a` searches every recorded directory. `-u` prints each matching command once, with no number or date, and keeps the latest. It combines with `-a` and `-v` in either order.
 
 ## Files
 

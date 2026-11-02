@@ -26,7 +26,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   exit 1
 fi
 
-DIRHIST_VERSION=v1.0.3
+DIRHIST_VERSION=v1.0.4
 DIRHIST_REGISTRY="${DIRHIST_REGISTRY:-$HOME/.dirhist}"
 DIRHIST_HISTORY="${DIRHIST_HISTORY:-$HOME/.dirhist_history}"
 DIRHIST_LOCK="${DIRHIST_LOCK:-$HOME/.dirhist.lock}"
@@ -249,17 +249,19 @@ _dirhist_print_entry() {
 # $3 include substring, empty to keep every command
 # $4 1 to print a directory header when it changes
 # $5 name of an array of substrings to skip. Omit it to skip nothing.
+# $6 1 to print each command once, keeping its latest copy
 # Return 1 when nothing is selected.
 _dirhist_render() {
-  local filter="$1" limit="$2" pattern="$3" headers="$4"
-  local i d theme use_color=0 pos total start k last="" cmd ex skip
-  local -a pick=() pick_n=() _dh_no_ex=()
-  local -A tally=()
+  local filter="$1" limit="$2" pattern="$3" headers="$4" unique="${6:-0}"
+  local i d theme use_color=0 pos total start k last="" cmd ex skip p
+  local -a pick=() pick_n=() _dh_no_ex=() upos=() npick=() npick_n=()
+  local -A tally=() uniq_seen=()
   local -n _dh_excludes="${5:-_dh_no_ex}"
   local precomputed=0
   # History asks for one directory and sometimes only its newest N.
+  # -u has to see every match before it keeps the latest, so it skips that ring.
   # Grep still filters after the scan, so it keeps every command of that scope.
-  if [[ -n "$filter" && -z "$pattern" && -n "$limit" && "$limit" != 0 && ${#_dh_excludes[@]} -eq 0 ]]; then
+  if [[ "$unique" != 1 && -n "$filter" && -z "$pattern" && -n "$limit" && "$limit" != 0 && ${#_dh_excludes[@]} -eq 0 ]]; then
     _dirhist_load_entries "$filter" "$limit"
     precomputed=1
   else
@@ -302,6 +304,26 @@ _dirhist_render() {
   done
   total=${#pick[@]}
   (( total > 0 )) || return 1
+  if [[ "$unique" == 1 ]]; then
+    for (( pos=total - 1; pos >= 0; pos-- )); do
+      k="${pick[pos]}"
+      cmd="${_dirhist_e_cmd[k]}"
+      # Number and date are not part of the command. Trailing space is not either.
+      cmd="${cmd%"${cmd##*[![:space:]]}"}"
+      [[ -n "${uniq_seen["$cmd"]+x}" ]] && continue
+      uniq_seen["$cmd"]=1
+      _dirhist_e_cmd[k]="$cmd"
+      upos+=("$pos")
+    done
+    for (( pos=${#upos[@]} - 1; pos >= 0; pos-- )); do
+      p="${upos[pos]}"
+      npick+=("${pick[p]}")
+      npick_n+=("${pick_n[p]}")
+    done
+    pick=("${npick[@]}")
+    pick_n=("${npick_n[@]}")
+    total=${#pick[@]}
+  fi
   start=0
   if [[ -n "$limit" ]] && (( limit < total )); then
     start=$((total - limit))
@@ -315,6 +337,10 @@ _dirhist_render() {
     if [[ "$headers" == 1 && "${_dirhist_e_dir[k]}" != "$last" ]]; then
       builtin printf '%s\n' "${_dirhist_e_dir[k]}"
       last="${_dirhist_e_dir[k]}"
+    fi
+    if [[ "$unique" == 1 ]]; then
+      builtin printf '%s\n' "${_dirhist_e_cmd[k]}"
+      continue
     fi
     _dirhist_print_entry "${pick_n[pos]}" \
       "${_dirhist_e_date[k]}" "${_dirhist_e_time[k]}" "${_dirhist_e_cmd[k]}" \
@@ -954,11 +980,11 @@ _dirhist_resolve_dir() {
 }
 
 _dirhist_show_history() {
-  local dir="$1" limit="${2:-}"
+  local dir="$1" limit="${2:-}" unique="${3:-0}"
   _dirhist_ensure_home || return 1
   {
     flock -s 9 || true
-    if ! _dirhist_render "$dir" "$limit" "" 0; then
+    if ! _dirhist_render "$dir" "$limit" "" 0 "" "$unique"; then
       builtin printf 'dirhist: no history in %s\n' "$dir" >&2
       return 1
     fi
@@ -1006,9 +1032,13 @@ _dirhist_themes_cmd() {
 }
 
 _dirhist_history_cmd() {
-  local limit="" dir
+  local limit="" dir unique=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      -u|--unique)
+        unique=1
+        shift
+        ;;
       -n)
         if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
           builtin printf 'dirhist: history -n needs a number\n' >&2
@@ -1043,16 +1073,25 @@ _dirhist_history_cmd() {
   else
     dir=$(_dirhist_resolve_dir "$*") || return 1
   fi
-  _dirhist_show_history "$dir" "$limit"
+  _dirhist_show_history "$dir" "$limit" "$unique"
 }
 
 _dirhist_grep_cmd() {
-  local all=0 dir pat="" word
+  local all=0 unique=0 dir pat="" word
   local -a excludes=() includes=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -a|--all)
         all=1
+        shift
+        ;;
+      -au|-ua)
+        all=1
+        unique=1
+        shift
+        ;;
+      -u|--unique)
+        unique=1
         shift
         ;;
       -v|--invert-match|-av|-va)
@@ -1098,13 +1137,13 @@ _dirhist_grep_cmd() {
   {
     flock -s 9 || true
     if [[ "$all" == 1 ]]; then
-      if ! _dirhist_render "" "" "$pat" 1 excludes; then
+      if ! _dirhist_render "" "" "$pat" 1 excludes "$unique"; then
         builtin printf 'dirhist: no matches\n' >&2
         return 1
       fi
     else
       dir=$(_dirhist_here) || return 1
-      if ! _dirhist_render "$dir" "" "$pat" 0 excludes; then
+      if ! _dirhist_render "$dir" "" "$pat" 0 excludes "$unique"; then
         builtin printf 'dirhist: no matches\n' >&2
         return 1
       fi
@@ -1398,15 +1437,17 @@ _dirhist_help_row() {
 
 _dirhist_help() {
   _dirhist_help_row "dirhist" "show this directory's history"
-  _dirhist_help_row "dirhist history [-n N] [dir|N]" "show this directory's history, or dir's"
+  _dirhist_help_row "dirhist history [-u] [-n N] [dir|N]" "show this directory's history, or dir's"
   _dirhist_help_row "" "-n N shows the newest N commands"
+  _dirhist_help_row "" "-u prints each command once, with no number or date"
   _dirhist_help_row "dirhist on|start [dir|N]" "record this directory, or directory N"
   _dirhist_help_row "dirhist off|stop [dir|N]" "stop recording this directory, or directory N, and keep its commands"
   _dirhist_help_row "dirhist rm|remove [dir|N]" "remove dir from the list and delete its commands"
   _dirhist_help_row "dirhist ls|list" "list numbered directories, marked on or off"
   _dirhist_help_row "dirhist status" "show on or off, the history file, and the config"
-  _dirhist_help_row "dirhist grep [-a] [-v PAT] [PAT]" "search this directory's history"
+  _dirhist_help_row "dirhist grep [-a] [-u] [-v PAT] [PAT]" "search this directory's history"
   _dirhist_help_row "" "-a searches every directory."
+  _dirhist_help_row "" "-u prints each matching command once, with no number or date"
   _dirhist_help_row "" "-v PAT without another PAT only excludes PAT"
   _dirhist_help_row "" "PAT keeps commands that contain it."
   _dirhist_help_row "" "The flags and PAT can be in either order"
@@ -1440,6 +1481,7 @@ _dirhist_help() {
   builtin printf '%s\n' "clean deletes this directory's commands. A path or a list number chooses another directory."
   builtin printf '%s\n' "clean -n N keeps the newest N commands there. Other directories stay."
   builtin printf '%s\n' "rm|remove deletes that directory's commands. stop|off keeps them."
+  builtin printf '%s\n' "-u prints each command once, with no number or date, and keeps the latest. With -n, N counts those commands."
 }
 
 _dirhist_add() {
@@ -1669,8 +1711,12 @@ dirhist() {
     shift
   fi
   case "$op" in
-    history)
-      _dirhist_history_cmd "$@"
+    history|-u|--unique|-n|-n*)
+      if [[ "$op" == history ]]; then
+        _dirhist_history_cmd "$@"
+      else
+        _dirhist_history_cmd "$op" "$@"
+      fi
       ;;
     on|start)
       here=$(_dirhist_on_off_dir "$op" "$@") || return
@@ -1828,12 +1874,12 @@ _dirhist_complete() {
   fi
 
   if (( cword <= 1 )); then
-    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune clean alias help version -V --version" "$cur"
+    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune clean alias help version -V --version -u --unique -n" "$cur"
     return 0
   fi
 
   case "${words[1]}" in
-    history)
+    history|-u|--unique|-n|-n*)
       _dirhist_complete_history
       ;;
     rm|remove|on|start|off|stop)
@@ -1889,13 +1935,20 @@ _dirhist_complete_history() {
   if [[ "$prev" == -n || "$positional" == 1 ]]; then
     return 0
   fi
+  local flags="-n"
+  if [[ "${words[1]}" != clean ]]; then
+    flags="-n -u --unique"
+  fi
   if [[ "$cur" == -* ]]; then
-    _dirhist_complete_words "-n" "$cur"
+    _dirhist_complete_words "$flags" "$cur"
     return 0
   fi
   _dirhist_complete_dirs "$cur"
   if [[ -z "$cur" ]]; then
     COMPREPLY+=("-n")
+    if [[ "${words[1]}" != clean ]]; then
+      COMPREPLY+=("-u")
+    fi
   fi
   compopt -o filenames 2>/dev/null || true
 }
@@ -1907,7 +1960,7 @@ _dirhist_complete_grep() {
       ;;
   esac
   if [[ -z "$cur" || "$cur" == -* ]]; then
-    _dirhist_complete_words "-a --all -v --invert-match -av -va" "$cur"
+    _dirhist_complete_words "-a --all -u --unique -au -ua -v --invert-match -av -va" "$cur"
   fi
 }
 
