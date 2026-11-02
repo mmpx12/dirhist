@@ -25,7 +25,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   exit 1
 fi
 
-DIRHIST_VERSION=v1.0.1
+DIRHIST_VERSION=v1.0.2
 DIRHIST_REGISTRY="${DIRHIST_REGISTRY:-$HOME/.dirhist}"
 DIRHIST_HISTORY="${DIRHIST_HISTORY:-$HOME/.dirhist_history}"
 DIRHIST_LOCK="${DIRHIST_LOCK:-$HOME/.dirhist.lock}"
@@ -124,25 +124,64 @@ _dirhist_collect_entry() {
   _dirhist_e_cmd+=("$4")
 }
 
-# Call _dirhist_collect_entry for every stored command.
+# Keep one scanned command. $5 is a directory filter, empty for every directory.
+# $6 is the newest-N window, or 0 to keep every match. The ring and counters
+# are namerefs to the caller's locals.
+# shellcheck disable=SC2034 # Namerefs write the caller's ring.
+_dirhist_keep_scanned() {
+  local sdir="$1" sdate="$2" stime="$3" scmd="$4" filter="$5" limit="$6"
+  local -n kn="$7" kri="$8" kfilled="$9"
+  local -n kdir="${10}" kdate="${11}" ktime="${12}" kcmd="${13}" knum="${14}"
+  if [[ -n "$filter" && "$sdir" != "$filter" ]]; then
+    return 0
+  fi
+  kn=$((kn + 1))
+  if (( limit == 0 )); then
+    _dirhist_collect_entry "$sdir" "$sdate" "$stime" "$scmd"
+    return 0
+  fi
+  kdir[kri]="$sdir"
+  kdate[kri]="$sdate"
+  ktime[kri]="$stime"
+  kcmd[kri]="$scmd"
+  knum[kri]=$kn
+  kri=$(( (kri + 1) % limit ))
+  if (( kfilled < limit )); then
+    kfilled=$((kfilled + 1))
+  fi
+}
+
+# Call _dirhist_collect_entry for stored commands.
+# $2 directory filter, empty for every directory. Other directories are not stored.
+# $3 newest N to keep, or 0 for all of the selected commands. Original numbers
+# for that window are stored in _dirhist_e_num.
 _dirhist_foreach() {
-  local file="$1" line dir="" date="" time="" cmd="" open=0
+  local file="$1" filter="${2:-}" limit="${3:-0}"
+  local line dir="" date="" time="" cmd="" open=0 skipping=0
+  local n=0 ri=0 filled=0 j start idx
+  local -a r_dir=() r_date=() r_time=() r_cmd=() r_num=()
   local re_mark='^@@ (.*)$'
   local re_stamp='^\[([0-9]{4}-[0-9]{2}-[0-9]{2})\]=\[([0-9]{2}:[0-9]{2}:[0-9]{2})\]──► (.*)$'
   [[ -f "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ $re_mark ]]; then
-      if [[ "$open" == 1 ]]; then
-        _dirhist_collect_entry "$dir" "$date" "$time" "$cmd"
+      if [[ "$open" == 1 && "$skipping" == 0 ]]; then
+        _dirhist_keep_scanned "$dir" "$date" "$time" "$cmd" "$filter" "$limit" \
+          n ri filled r_dir r_date r_time r_cmd r_num
       fi
       dir="${BASH_REMATCH[1]}"
       date=""
       time=""
       cmd=""
       open=1
+      if [[ -n "$filter" && "$dir" != "$filter" ]]; then
+        skipping=1
+      else
+        skipping=0
+      fi
       continue
     fi
-    [[ "$open" == 1 ]] || continue
+    [[ "$open" == 1 && "$skipping" == 0 ]] || continue
     if [[ -z "$cmd" && -z "$date" && "$line" =~ $re_stamp ]]; then
       date="${BASH_REMATCH[1]}"
       time="${BASH_REMATCH[2]}"
@@ -153,17 +192,36 @@ _dirhist_foreach() {
       cmd+=$'\n'"$line"
     fi
   done < "$file"
-  if [[ "$open" == 1 ]]; then
-    _dirhist_collect_entry "$dir" "$date" "$time" "$cmd"
+  if [[ "$open" == 1 && "$skipping" == 0 ]]; then
+    _dirhist_keep_scanned "$dir" "$date" "$time" "$cmd" "$filter" "$limit" \
+      n ri filled r_dir r_date r_time r_cmd r_num
   fi
+  (( limit > 0 && filled > 0 )) || return 0
+  if (( filled < limit )); then
+    start=0
+  else
+    start=$ri
+  fi
+  for ((j = 0; j < filled; j++)); do
+    idx=$(( (start + j) % limit ))
+    _dirhist_collect_entry "${r_dir[idx]}" "${r_date[idx]}" "${r_time[idx]}" "${r_cmd[idx]}"
+    _dirhist_e_num+=("${r_num[idx]}")
+  done
 }
 
+# $1 directory filter, empty for every directory.
+# $2 newest N, empty for every selected command.
 _dirhist_load_entries() {
+  local filter="${1:-}" limit="${2:-}"
   _dirhist_e_dir=()
   _dirhist_e_date=()
   _dirhist_e_time=()
   _dirhist_e_cmd=()
-  _dirhist_foreach "$DIRHIST_HISTORY"
+  _dirhist_e_num=()
+  if [[ -z "$limit" ]]; then
+    limit=0
+  fi
+  _dirhist_foreach "$DIRHIST_HISTORY" "$filter" "$limit"
 }
 
 _dirhist_print_entry() {
@@ -197,7 +255,29 @@ _dirhist_render() {
   local -a pick=() pick_n=() _dh_no_ex=()
   local -A tally=()
   local -n _dh_excludes="${5:-_dh_no_ex}"
-  _dirhist_load_entries
+  local precomputed=0
+  # History asks for one directory and sometimes only its newest N.
+  # Grep still filters after the scan, so it keeps every command of that scope.
+  if [[ -n "$filter" && -z "$pattern" && -n "$limit" && "$limit" != 0 && ${#_dh_excludes[@]} -eq 0 ]]; then
+    _dirhist_load_entries "$filter" "$limit"
+    precomputed=1
+  else
+    _dirhist_load_entries "$filter"
+  fi
+  if [[ "$precomputed" == 1 ]]; then
+    total=${#_dirhist_e_dir[@]}
+    (( total > 0 )) || return 1
+    theme=$(_dirhist_theme_name)
+    if [[ -t 1 ]] && _dirhist_option_on color; then
+      use_color=1
+    fi
+    for (( pos=0; pos<total; pos++ )); do
+      _dirhist_print_entry "${_dirhist_e_num[pos]}" \
+        "${_dirhist_e_date[pos]}" "${_dirhist_e_time[pos]}" "${_dirhist_e_cmd[pos]}" \
+        "$use_color" "$theme"
+    done
+    return 0
+  fi
   for i in "${!_dirhist_e_dir[@]}"; do
     d="${_dirhist_e_dir[i]}"
     if [[ -n "$filter" && "$d" != "$filter" ]]; then
@@ -315,14 +395,51 @@ _dirhist_aliased_histignore_name() {
 # New history entries keep the full line (pipelines, &&, newlines).
 # HISTIGNORE lines never reach history, so those fall back to BASH_COMMAND.
 # A leading space (ignorespace) is not recorded.
+# Split one `history 1` record into _dirhist_hist_num and _dirhist_hist_cmd.
+# Bash prints "number  command" or "number* command". Later lines stay attached.
+_dirhist_parse_history_text() {
+  local line="$1" first rest orig tail
+  _dirhist_hist_num=
+  _dirhist_hist_cmd=
+  [[ -n "$line" ]] || return 0
+  first=${line%%$'\n'*}
+  orig=$first
+  if [[ "$line" == *$'\n'* ]]; then
+    rest=${line#*$'\n'}
+  else
+    rest=
+  fi
+  if [[ "$orig" =~ ^[[:space:]]*([0-9]+)(.*)$ ]]; then
+    _dirhist_hist_num=${BASH_REMATCH[1]}
+    tail=${BASH_REMATCH[2]}
+    if [[ "$tail" =~ ^[*[:space:]][[:space:]](.*)$ ]]; then
+      first=${BASH_REMATCH[1]}
+    else
+      first=$orig
+    fi
+  fi
+  if [[ -n "$rest" ]]; then
+    _dirhist_hist_cmd="${first}"$'\n'"${rest}"
+  else
+    _dirhist_hist_cmd=$first
+  fi
+}
+
+# Read the last shell history entry without forking sed.
+_dirhist_read_last_history() {
+  local line
+  line=$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null || true)
+  _dirhist_parse_history_text "$line"
+}
+
 _dirhist_capture() {
-  local hist_line hist_num prev_cmd
+  local hist_num prev_cmd
   _dirhist_cmd=
   _dirhist_log_this=0
 
-  hist_line=$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null || true)
-  hist_num=$(builtin printf '%s\n' "$hist_line" | sed -n '1s/^ *\([0-9][0-9]*\).*/\1/p')
-  prev_cmd=$(builtin printf '%s\n' "$hist_line" | sed '1s/^ *[0-9][0-9]*[* ] //')
+  _dirhist_read_last_history
+  hist_num=${_dirhist_hist_num:-}
+  prev_cmd=${_dirhist_hist_cmd:-}
 
   if [[ -n "$hist_num" && "$hist_num" != "${_dirhist_last_histnum:-}" ]]; then
     _dirhist_cmd=$prev_cmd
@@ -353,10 +470,8 @@ _dirhist_capture() {
 }
 
 _dirhist_sync_histnum() {
-  local hist_line hist_num
-  hist_line=$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null || true)
-  hist_num=$(builtin printf '%s\n' "$hist_line" | sed -n '1s/^ *\([0-9][0-9]*\).*/\1/p')
-  _dirhist_last_histnum=${hist_num:-0}
+  _dirhist_read_last_history
+  _dirhist_last_histnum=${_dirhist_hist_num:-0}
 }
 
 _dirhist_trim() {
@@ -1118,17 +1233,19 @@ _dirhist_debug() {
   [[ "$was_armed" == 1 ]] || return 0
   _dirhist_armed=0
 
-  _dirhist_capture
   _dirhist_pending_pwd="$(_dirhist_here)"
   _dirhist_pending_cmd=
   _dirhist_pending_wrote=
-
-  if [[ "${_dirhist_log_this:-0}" == 1 && -n "${_dirhist_cmd:-}" ]]; then
-    _dirhist_pending_cmd="$_dirhist_cmd"
-    if _dirhist_registered "$_dirhist_pending_pwd"; then
-      _dirhist_append "$_dirhist_pending_pwd" "$_dirhist_pending_cmd"
-      _dirhist_pending_wrote="$_dirhist_pending_pwd"
-    fi
+  _dirhist_capture
+  if [[ "${_dirhist_log_this:-0}" != 1 || -z "${_dirhist_cmd:-}" ]]; then
+    return 0
+  fi
+  _dirhist_pending_cmd="$_dirhist_cmd"
+  # Not recorded here. Keep the command so cd into a recorded directory,
+  # or dirhist on, can still log it. Do not read config or append.
+  if _dirhist_registered "$_dirhist_pending_pwd"; then
+    _dirhist_append "$_dirhist_pending_pwd" "$_dirhist_pending_cmd"
+    _dirhist_pending_wrote="$_dirhist_pending_pwd"
   fi
   return 0
 }
@@ -1299,7 +1416,7 @@ _dirhist_help() {
   builtin printf '%s\n' "Prune removes a directory from the list. Its old commands stay in the history."
   builtin printf '%s\n' "clean deletes this directory's commands. A path or a list number chooses another directory."
   builtin printf '%s\n' "clean -n N keeps the newest N commands there. Other directories stay."
-  builtin printf '%s\n' "rm|remove deletes that directory's commands. stop|off keeps them. disable is the same as stop."
+  builtin printf '%s\n' "rm|remove deletes that directory's commands. stop|off keeps them."
 }
 
 _dirhist_add() {
@@ -1536,7 +1653,7 @@ dirhist() {
       here=$(_dirhist_on_off_dir "$op" "$@") || return
       _dirhist_add "$here"
       ;;
-    off|disable|stop)
+    off|stop)
       here=$(_dirhist_on_off_dir "$op" "$@") || return
       _dirhist_remove "$here"
       ;;
@@ -1693,7 +1810,7 @@ _dirhist_complete() {
     history)
       _dirhist_complete_history
       ;;
-    rm|remove|on|start|off|stop|disable)
+    rm|remove|on|start|off|stop)
       (( cword == 2 )) || return 0
       _dirhist_complete_dirs "$cur"
       compopt -o filenames 2>/dev/null || true

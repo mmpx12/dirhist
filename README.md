@@ -47,7 +47,7 @@ dirhist clean [-n N] [dir|N]       delete this directory's commands, or dir's
 dirhist version|-V|--version       print version
 ```
 
-`disable` is the same as `stop`. Tab completion fills commands, theme names, and recorded directories.
+Tab completion fills commands, theme names, and recorded directories.
 
 `on` means the directory is still recorded. `off` means recording has stopped and its commands are still kept. `remove` deletes those commands.
 
