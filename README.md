@@ -44,10 +44,14 @@ dirhist ignore -g -d PAT           stop ignoring PAT everywhere
 dirhist prune                      drop recorded directories that are gone
 dirhist clean [-n N] [dir|N]       delete this directory's commands, or dir's
                                    -n N keeps the newest N commands
+dirhist alias [NAME]               print or set the command alias
+dirhist alias -d                   remove the alias
 dirhist version|-V|--version       print version
 ```
 
 Tab completion fills commands, theme names, and recorded directories.
+
+`alias = dh` under `[global]` makes `dh` run `dirhist`. `dirhist` defines that alias when the file is sourced. It does not belong in `~/.bashrc`. `dirhist alias dh` writes the same line.
 
 `on` means the directory is still recorded. `off` means recording has stopped and its commands are still kept. `remove` deletes those commands.
 
@@ -88,6 +92,7 @@ theme = crimson
 max_lines = 500
 
 [global]
+# alias = dh
 echo *
 
 [/home/you/project]
@@ -102,6 +107,7 @@ max_lines = 50
 - `status_color` colors the `on`, `off`, `history`, and `config` labels. Paths stay plain. `on` is green, `off` is red, and the other labels are solarized dark.
 - `theme` is `crimson`, `ocean`, `forest`, `amber`, or `violet`. The default is `crimson`. The old names `history` and `ember` still select `crimson`.
 - `max_lines` is how many commands to keep per directory. Unset means no limit. A `max_lines` line in a directory section overwrites `[options]` for that directory. `off` or `0` there means no limit.
+- `alias` under `[global]` is a command name `dirhist` defines, for example `alias = dh`. It is not an ignore pattern. `dirhist alias dh` writes that line.
 
 Help usage lines use solarized dark, like `bat`. Descriptions stay the terminal color. Set `NO_COLOR` to leave help plain.
 

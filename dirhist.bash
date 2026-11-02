@@ -19,13 +19,14 @@
 # theme is crimson, ocean, forest, amber, or violet. Default is crimson.
 # dirhist themes prints a sample of each theme.
 # Tab completion covers commands, theme names, and recorded directories.
+# alias under [global] is a command name this file defines. It is not a pattern.
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   printf 'dirhist: source this file from ~/.bashrc\n  source %q\n' "${BASH_SOURCE[0]}" >&2
   exit 1
 fi
 
-DIRHIST_VERSION=v1.0.2
+DIRHIST_VERSION=v1.0.3
 DIRHIST_REGISTRY="${DIRHIST_REGISTRY:-$HOME/.dirhist}"
 DIRHIST_HISTORY="${DIRHIST_HISTORY:-$HOME/.dirhist_history}"
 DIRHIST_LOCK="${DIRHIST_LOCK:-$HOME/.dirhist.lock}"
@@ -664,6 +665,14 @@ _dirhist_is_max_lines() {
   [[ "$key" == max_lines ]]
 }
 
+# An alias line in [global] names the command. It is not an ignore pattern.
+_dirhist_is_alias_line() {
+  local key
+  [[ "$1" =~ ^([A-Za-z][A-Za-z0-9_]*)[[:space:]]*(=|[[:space:]])[[:space:]]*(.*)$ ]] || return 1
+  key="${BASH_REMATCH[1],,}"
+  [[ "$key" == alias ]]
+}
+
 # Return 0 when pat ignores cmd.
 # `ls` ignores `ls`, `ls -alh`, and `ls /tmp`. It does not ignore `lsblk`.
 # * and ? still match any text.
@@ -687,6 +696,10 @@ _dirhist_ignored() {
       continue
     fi
     _dirhist_is_max_lines "$trimmed" && continue
+    # alias in [global] names the command. A bare pattern `alias` still matches.
+    if [[ -z "$scope" || "$scope" == global ]] && _dirhist_is_alias_line "$trimmed"; then
+      continue
+    fi
     # Lines before the first section are global.
     if [[ -z "$scope" || "$scope" == "global" || "$scope" == "$dir" ]]; then
       _dirhist_pattern_matches "$cmd" "$trimmed" && return 0
@@ -732,6 +745,9 @@ _dirhist_ensure_config() {
 #
 # A pattern ignores that command and anything after it. ls ignores ls -alh.
 # * still matches any text. ls does not ignore lsblk.
+# alias under [global] is the command name dirhist defines. It is not a pattern.
+#   alias = dh
+#   dirhist alias dh
 # Patterns under [global] are ignored in every recorded directory.
 # A [/absolute/path] or [dir /absolute/path] section applies only there.
 # Use the physical path (pwd -P). Add a rule with:
@@ -745,6 +761,7 @@ status_color = on
 theme = crimson
 
 [global]
+# alias = dh
 # git status
 # echo *
 EOF
@@ -761,6 +778,9 @@ _dirhist_ignore_list_scope() {
       continue
     fi
     _dirhist_is_max_lines "$trimmed" && continue
+    if [[ -z "$scope" || "$scope" == global ]] && _dirhist_is_alias_line "$trimmed"; then
+      continue
+    fi
     effective="${scope:-global}"
     if [[ "$effective" == "$want" ]]; then
       builtin printf '  %s\n' "$trimmed"
@@ -1400,6 +1420,8 @@ _dirhist_help() {
   _dirhist_help_row "dirhist prune" "drop recorded directories that are gone"
   _dirhist_help_row "dirhist clean [-n N] [dir|N]" "delete this directory's commands, or dir's"
   _dirhist_help_row "" "-n N keeps the newest N commands"
+  _dirhist_help_row "dirhist alias [NAME]" "print or set the command alias"
+  _dirhist_help_row "dirhist alias -d" "remove the alias"
   _dirhist_help_row "dirhist version|-V|--version" "print version"
   builtin printf '\n'
   builtin printf '%s\n' "Recorded directories are listed in ~/.dirhist."
@@ -1412,6 +1434,7 @@ _dirhist_help() {
   builtin printf '%s\n' "A max_lines line in a directory section overwrites [options]. off or 0 means no limit there."
   builtin printf '%s\n' "theme is crimson, ocean, forest, amber, or violet. Default is crimson."
   builtin printf '%s\n' "Tab completion fills commands, theme names, and recorded directories."
+  builtin printf '%s\n' "alias under [global] is a command dirhist defines. dirhist alias NAME sets it."
   builtin printf '%s\n' "Ignore rules are stored in the config file."
   builtin printf '%s\n' "Prune removes a directory from the list. Its old commands stay in the history."
   builtin printf '%s\n' "clean deletes this directory's commands. A path or a list number chooses another directory."
@@ -1692,6 +1715,9 @@ dirhist() {
     help|-h|--help)
       _dirhist_help
       ;;
+    alias)
+      _dirhist_alias_cmd "$@"
+      ;;
     version|-V|--version)
       if [[ $# -gt 0 ]]; then
         builtin printf 'dirhist: version takes no arguments\n' >&2
@@ -1802,7 +1828,7 @@ _dirhist_complete() {
   fi
 
   if (( cword <= 1 )); then
-    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune clean help version -V --version" "$cur"
+    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune clean alias help version -V --version" "$cur"
     return 0
   fi
 
@@ -1829,6 +1855,11 @@ _dirhist_complete() {
       ;;
     clean)
       _dirhist_complete_history
+      ;;
+    alias)
+      if [[ -z "$cur" || "$cur" == -* ]]; then
+        _dirhist_complete_words "-d --delete" "$cur"
+      fi
       ;;
     version|-V|--version)
       return 0
@@ -1880,5 +1911,123 @@ _dirhist_complete_grep() {
   fi
 }
 
+# Print the alias from [global]. Empty when it is unset. Last line wins.
+_dirhist_config_alias() {
+  local line trimmed header scope="" key found=""
+  [[ -f "${DIRHIST_CONFIG:-}" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed=$(_dirhist_trim "$line")
+    [[ -z "$trimmed" || "$trimmed" == \#* ]] && continue
+    if header=$(_dirhist_config_header "$trimmed"); then
+      scope=$header
+      continue
+    fi
+    [[ -z "$scope" || "$scope" == global ]] || continue
+    [[ "$trimmed" =~ ^([A-Za-z][A-Za-z0-9_]*)[[:space:]]*(=|[[:space:]])[[:space:]]*(.*)$ ]] || continue
+    key="${BASH_REMATCH[1],,}"
+    [[ "$key" == alias ]] || continue
+    found=$(_dirhist_trim "${BASH_REMATCH[3]}")
+    if [[ "$found" == \"*\" || "$found" == \'*\' ]]; then
+      found="${found:1:${#found}-2}"
+    fi
+  done < "$DIRHIST_CONFIG"
+  builtin printf '%s\n' "$found"
+}
+
+_dirhist_alias_name_ok() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || return 1
+  [[ "$1" != dirhist ]]
+}
+
+# Remove global alias lines. When $1 is set, write alias = $1 under [global].
+_dirhist_alias_write() {
+  local name="$1" tmp line trimmed header scope="" wrote=0 mode=""
+  _dirhist_ensure_config || return 1
+  mode=$(stat -c '%a' "$DIRHIST_CONFIG" 2>/dev/null || true)
+  tmp=$(mktemp) || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed=$(_dirhist_trim "$line")
+    if [[ -n "$trimmed" ]] && header=$(_dirhist_config_header "$trimmed"); then
+      scope=$header
+      builtin printf '%s\n' "$line" >> "$tmp"
+      if [[ "$scope" == global && -n "$name" && "$wrote" == 0 ]]; then
+        builtin printf 'alias = %s\n' "$name" >> "$tmp"
+        wrote=1
+      fi
+      continue
+    fi
+    if [[ ( -z "$scope" || "$scope" == global ) && -n "$trimmed" && "$trimmed" != \#* ]] && _dirhist_is_alias_line "$trimmed"; then
+      continue
+    fi
+    builtin printf '%s\n' "$line" >> "$tmp"
+  done < "$DIRHIST_CONFIG"
+  if [[ -n "$name" && "$wrote" == 0 ]]; then
+    builtin printf '\n[global]\nalias = %s\n' "$name" >> "$tmp"
+  fi
+  mv -f -- "$tmp" "$DIRHIST_CONFIG" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  if [[ -n "$mode" ]]; then
+    chmod "$mode" "$DIRHIST_CONFIG" 2>/dev/null || true
+  fi
+}
+
+# Define the configured alias in this shell and complete it.
+_dirhist_apply_alias() {
+  local name="$1"
+  if [[ -n "${_dirhist_alias:-}" && "$_dirhist_alias" != "$name" ]]; then
+    unalias "$_dirhist_alias" 2>/dev/null || true
+    complete -r "$_dirhist_alias" 2>/dev/null || true
+  fi
+  _dirhist_alias=
+  complete -F _dirhist_complete dirhist
+  [[ -n "$name" ]] || return 0
+  if ! _dirhist_alias_name_ok "$name"; then
+    builtin printf 'dirhist: invalid alias: %s\n' "$name" >&2
+    return 1
+  fi
+  # shellcheck disable=SC2139 # Expand the name now. The value stays the word dirhist.
+  builtin alias "${name}=dirhist"
+  complete -F _dirhist_complete "$name"
+  _dirhist_alias=$name
+}
+
+_dirhist_alias_cmd() {
+  local name
+  if [[ $# -eq 0 ]]; then
+    name=$(_dirhist_config_alias)
+    if [[ -z "$name" ]]; then
+      builtin printf 'dirhist: no alias\n'
+      return 0
+    fi
+    builtin printf '%s\n' "$name"
+    return 0
+  fi
+  if [[ "$1" == -d || "$1" == --delete ]]; then
+    if [[ $# -gt 1 ]]; then
+      builtin printf 'dirhist: alias -d takes no name\n' >&2
+      return 2
+    fi
+    _dirhist_alias_write "" || return 1
+    _dirhist_apply_alias "" || true
+    builtin printf 'dirhist: alias removed\n'
+    return 0
+  fi
+  if [[ $# -gt 1 || "$1" == -* ]]; then
+    builtin printf 'dirhist: alias takes one name\n' >&2
+    return 2
+  fi
+  name=$1
+  if ! _dirhist_alias_name_ok "$name"; then
+    builtin printf 'dirhist: invalid alias: %s\n' "$name" >&2
+    return 2
+  fi
+  _dirhist_alias_write "$name" || return 1
+  _dirhist_apply_alias "$name" || return 1
+  builtin printf 'dirhist: alias %s\n' "$name"
+}
+
 _dirhist_install
-complete -F _dirhist_complete dirhist
+# Always apply, including an empty name, so a removed config line drops the old alias.
+_dirhist_apply_alias "$(_dirhist_config_alias)" || true
