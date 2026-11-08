@@ -15,7 +15,8 @@
 # cd, ls, and other HISTIGNORE names are still recorded, including when they are aliases.
 # Extra ignore rules are read from ~/.config/dirhist/config.
 # [options] date, color, and status_color are on or off. All default to on.
-# color colors history. status_color colors the on, off, history, and config labels.
+# color colors the number and the date. highlight colors the command in Solarized (dark).
+# status_color colors the on, off, history, and config labels.
 # theme is crimson, ocean, forest, amber, or violet. Default is crimson.
 # dirhist themes prints a sample of each theme.
 # Tab completion covers commands, theme names, and recorded directories.
@@ -26,7 +27,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   exit 1
 fi
 
-DIRHIST_VERSION=v1.0.4
+DIRHIST_VERSION=v1.0.5
 DIRHIST_REGISTRY="${DIRHIST_REGISTRY:-$HOME/.dirhist}"
 DIRHIST_HISTORY="${DIRHIST_HISTORY:-$HOME/.dirhist_history}"
 DIRHIST_LOCK="${DIRHIST_LOCK:-$HOME/.dirhist.lock}"
@@ -226,13 +227,31 @@ _dirhist_load_entries() {
 }
 
 _dirhist_print_entry() {
-  local n="$1" date="$2" time="$3" cmd="$4" use_color="$5" theme="$6"
-  local first rest
+  local n="$1" date="$2" time="$3" cmd="$4" use_color="$5" theme="$6" hl="${7:-0}"
+  local first rest mark datec timec cmdc
   first="${cmd%%$'\n'*}"
   if [[ "$cmd" == *$'\n'* ]]; then
     rest="${cmd#*$'\n'}"
   else
     rest=""
+  fi
+  if [[ "$hl" == 1 ]]; then
+    if [[ -n "$date" ]]; then
+      if [[ "$use_color" == 1 ]]; then
+        _dirhist_theme_codes "$theme" || return 1
+        builtin printf '%5d  %s[%s%s%s]=[%s%s%s]──►%s ' \
+          "$n" "$mark" "$datec" "$date" "$mark" "$timec" "$time" "$mark" "$mark"
+      else
+        builtin printf '%5d  [%s]=[%s]──► ' "$n" "$date" "$time"
+      fi
+    else
+      builtin printf '%5d  ' "$n"
+    fi
+    builtin printf '%s\033[0m\n' "$first"
+    if [[ -n "$rest" ]]; then
+      builtin printf '%s\033[0m\n' "$rest"
+    fi
+    return 0
   fi
   if [[ -n "$date" ]]; then
     _dirhist_theme_paint "$theme" "$n" "$date" "$time" "$first" "$use_color"
@@ -244,20 +263,404 @@ _dirhist_print_entry() {
   fi
 }
 
+# Return 0 when command highlighting is wanted.
+# $1 is 1 or 0 to force it, empty to follow [options] highlight.
+# Missing highlight is off. Output that is not a terminal stays plain.
+_dirhist_highlight_on() {
+  local force="${1:-}" val
+  [[ -t 1 && -z "${NO_COLOR:-}" ]] || return 1
+  case "$force" in
+    1|on|yes|true) return 0 ;;
+    0|off|no|false) return 1 ;;
+  esac
+  val=$(_dirhist_config_value highlight)
+  case "$val" in
+    on|yes|true|1|bash) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# $1 output name  $2 color name  $3 SGR  $4 text
+# A newline closes the color and opens it again on the next line, so splitting
+# a command into lines keeps each line colored.
+_dirhist_hl_put() {
+  local -n _o="$1" _c="$2"
+  local color="$3" text="$4" piece more
+  [[ -n "$text" ]] || return 0
+  more=1
+  while [[ "$more" == 1 ]]; do
+    more=0
+    piece=$text
+    if [[ -n "$color" && "$text" == *$'\n'* ]]; then
+      piece=${text%%$'\n'*}
+      text=${text#*$'\n'}
+      more=1
+    fi
+    if [[ -n "$piece" ]]; then
+      if [[ "$color" == "$_c" ]]; then
+        _o+=$piece
+      else
+        [[ -n "$_c" ]] && _o+=$'\033[0m'
+        _o+="$color$piece"
+        _c=$color
+      fi
+    fi
+    if [[ "$more" == 1 ]]; then
+      [[ -n "$_c" ]] && _o+=$'\033[0m'
+      _o+=$'\n'
+      _c=""
+    fi
+  done
+}
+
+# Return 0 when $1 is a bash builtin or a compound keyword.
+_dirhist_is_builtin() {
+  case "$1" in
+    echo|printf|cd|source|alias|unalias|export|unset|set|local|declare|typeset|readonly|read|mapfile|readarray|eval|exec|command|builtin|type|hash|pwd|exit|return|true|false|test|'['|']'|'[['|']]'|let|shift|getopts|trap|umask|ulimit|wait|kill|jobs|fg|bg|disown|pushd|popd|dirs|shopt|enable|help|history|fc|bind|complete|compgen|compopt|caller|times|logout|suspend|'.'|':')
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Color one command as bash. $1 is the text. $2 is the name of the result.
+# Solarized (dark) colors.
+_dirhist_paint_bash() {
+  local s="$1"
+  local -n _dh_dest="$2"
+  local _dh_out="" _dh_col=""
+  local i=0 n=${#s} ch word two j redir=0 expect=1 bs=$'\\'
+  while (( i < n )); do
+    ch="${s:i:1}"
+    if [[ "$ch" == "'" ]]; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE0" "'"
+      i=$((i + 1))
+      word=""
+      while (( i < n )) && [[ "${s:i:1}" != "'" ]]; do
+        word+="${s:i:1}"
+        i=$((i + 1))
+      done
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_CYAN" "$word"
+      if (( i < n )); then
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE0" "'"
+        i=$((i + 1))
+      fi
+      expect=0
+      redir=0
+      continue
+    fi
+    if [[ "$ch" == '"' ]]; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE0" '"'
+      i=$((i + 1))
+      while (( i < n )); do
+        ch="${s:i:1}"
+        if [[ "$ch" == '"' ]]; then
+          _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE0" '"'
+          i=$((i + 1))
+          break
+        fi
+        if [[ "$ch" == "$bs" ]]; then
+          # \" \\ and \$ are escapes. Other backslashes stay in the string.
+          if [[ "${s:i+1:1}" == '"' || "${s:i+1:1}" == "$bs" || "${s:i+1:1}" == '$' ]]; then
+            _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_RED" "$ch"
+            i=$((i + 1))
+            _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_RED" "${s:i:1}"
+            i=$((i + 1))
+          else
+            _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_CYAN" "$ch"
+            i=$((i + 1))
+            if (( i < n )); then
+              _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_CYAN" "${s:i:1}"
+              i=$((i + 1))
+            fi
+          fi
+          continue
+        fi
+        if [[ "$ch" == '$' ]]; then
+          _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_GREEN" '$'
+          i=$((i + 1))
+          if [[ "${s:i:1}" == '{' ]]; then
+            _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE01" '{'
+            i=$((i + 1))
+            word=""
+            while (( i < n )); do
+              ch="${s:i:1}"
+              [[ "$ch" == '}' || "$ch" == '"' ]] && break
+              word+="$ch"
+              i=$((i + 1))
+            done
+            _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BLUE" "$word"
+            if [[ "${s:i:1}" == '}' ]]; then
+              _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE01" '}'
+              i=$((i + 1))
+            fi
+          else
+            ch="${s:i:1}"
+            if [[ "$ch" == [0-9] ]]; then
+              _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BLUE" "$ch"
+              i=$((i + 1))
+            elif [[ "$ch" == [#@?*'!$'-] ]]; then
+              _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_MAGENTA" "$ch"
+              i=$((i + 1))
+            elif [[ "$ch" == [A-Za-z_] ]]; then
+              word=""
+              while (( i < n )); do
+                ch="${s:i:1}"
+                [[ "$ch" == [A-Za-z0-9_] ]] || break
+                word+="$ch"
+                i=$((i + 1))
+              done
+              if [[ "$word" == "_" ]]; then
+                _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_MAGENTA" "$word"
+              else
+                _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BLUE" "$word"
+              fi
+            fi
+          fi
+          continue
+        fi
+        word=""
+        while (( i < n )); do
+          ch="${s:i:1}"
+          [[ "$ch" == '$' || "$ch" == '"' || "$ch" == "$bs" ]] && break
+          word+="$ch"
+          i=$((i + 1))
+        done
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_CYAN" "$word"
+      done
+      expect=0
+      redir=0
+      continue
+    fi
+    if [[ "$ch" == '#' ]]; then
+      word="${s:i}"
+      word="${word%%$'\n'*}"
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_COMMENT" "$word"
+      i=$((i + ${#word}))
+      continue
+    fi
+    if [[ "$ch" == " " || "$ch" == $'\t' || "$ch" == $'\n' ]]; then
+      word=""
+      while (( i < n )); do
+        ch="${s:i:1}"
+        [[ "$ch" == " " || "$ch" == $'\t' || "$ch" == $'\n' ]] || break
+        word+="$ch"
+        i=$((i + 1))
+      done
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE0" "$word"
+      continue
+    fi
+    if [[ "$ch" == "$bs" ]]; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_RED" "$ch"
+      i=$((i + 1))
+      if (( i < n )); then
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_RED" "${s:i:1}"
+        i=$((i + 1))
+      fi
+      continue
+    fi
+    if [[ "$ch" == '$' ]]; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_GREEN" '$'
+      i=$((i + 1))
+      if [[ "${s:i:1}" == '{' ]]; then
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE01" '{'
+        i=$((i + 1))
+        word=""
+        while (( i < n )); do
+          ch="${s:i:1}"
+          [[ "$ch" == '}' || "$ch" == ' ' || "$ch" == $'\t' || "$ch" == $'\n' ]] && break
+          word+="$ch"
+          i=$((i + 1))
+        done
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BLUE" "$word"
+        if [[ "${s:i:1}" == '}' ]]; then
+          _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE01" '}'
+          i=$((i + 1))
+        fi
+      elif [[ "${s:i:1}" == '(' ]]; then
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE01" '('
+        i=$((i + 1))
+        expect=1
+        redir=0
+        continue
+      else
+        ch="${s:i:1}"
+        if [[ "$ch" == [0-9] ]]; then
+          _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BLUE" "$ch"
+          i=$((i + 1))
+        elif [[ "$ch" == [#@?*'!$'-] ]]; then
+          _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_MAGENTA" "$ch"
+          i=$((i + 1))
+        elif [[ "$ch" == [A-Za-z_] ]]; then
+          word=""
+          while (( i < n )); do
+            ch="${s:i:1}"
+            [[ "$ch" == [A-Za-z0-9_] ]] || break
+            word+="$ch"
+            i=$((i + 1))
+          done
+          if [[ "$word" == "_" ]]; then
+            _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_MAGENTA" "$word"
+          else
+            _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BLUE" "$word"
+          fi
+        fi
+      fi
+      expect=0
+      redir=0
+      continue
+    fi
+    if [[ "$ch" == [0-9] ]]; then
+      j=$i
+      word=""
+      while (( j < n )) && [[ "${s:j:1}" == [0-9] ]]; do
+        word+="${s:j:1}"
+        j=$((j + 1))
+      done
+      if [[ "${s:j:1}" == '>' || "${s:j:1}" == '<' ]]; then
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_NUM" "$word"
+        i=$j
+        continue
+      fi
+    fi
+    two="${s:i:2}"
+    case "$two" in
+      '&&'|'||'|';;')
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_GREEN" "$two"
+        i=$((i + 2))
+        expect=1
+        redir=0
+        continue
+        ;;
+      '>>'|'<<'|'>&'|'<&'|'&>')
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE01" "$two"
+        i=$((i + 2))
+        expect=0
+        redir=1
+        continue
+        ;;
+    esac
+    case "$ch" in
+      '|'|';'|'&')
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_GREEN" "$ch"
+        i=$((i + 1))
+        expect=1
+        redir=0
+        continue
+        ;;
+      '>'|'<')
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE01" "$ch"
+        i=$((i + 1))
+        expect=0
+        redir=1
+        continue
+        ;;
+      '('|'{' )
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE01" "$ch"
+        i=$((i + 1))
+        expect=1
+        redir=0
+        continue
+        ;;
+      ')'|'}')
+        _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE01" "$ch"
+        i=$((i + 1))
+        continue
+        ;;
+    esac
+    word=""
+    while (( i < n )); do
+      ch="${s:i:1}"
+      if [[ "$ch" == "$bs" ]]; then
+        break
+      fi
+      case "$ch" in
+        ' '|$'\t'|$'\n'|'|'|'&'|';'|'>'|'<'|'('|')'|'{'|'}'|'"'|"'"|'$')
+          break
+          ;;
+      esac
+      word+="$ch"
+      i=$((i + 1))
+    done
+    if [[ -z "$word" ]]; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE0" "$ch"
+      i=$((i + 1))
+      continue
+    fi
+    if [[ "$redir" == 1 && "$word" =~ ^[0-9]+$ ]]; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_NUM" "$word"
+      redir=0
+    elif [[ "$expect" == 1 && "$word" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BLUE" "${BASH_REMATCH[1]}"
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE01" "="
+      [[ -n "${BASH_REMATCH[2]}" ]] && _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_CYAN" "${BASH_REMATCH[2]}"
+      redir=0
+    elif [[ "$word" == '~'* ]]; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_MAGENTA" "~"
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE0" "${word:1}"
+      expect=0
+      redir=0
+    elif [[ "$word" == -* ]]; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BLUE" "$word"
+      expect=0
+      redir=0
+    elif [[ "$word" == ']]' || "$word" == ']' ]]; then
+      # Closers stay green after the test expression. [ and [[ are commands.
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_GREEN" "$word"
+      expect=0
+      redir=0
+    elif [[ "$expect" == 1 ]] && _dirhist_is_builtin "$word"; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_GREEN" "$word"
+      expect=0
+      redir=0
+    elif [[ "$expect" == 1 ]]; then
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_YELLOW" "$word"
+      expect=0
+      redir=0
+    else
+      _dirhist_hl_put _dh_out _dh_col "$_DIRHIST_HL_BASE0" "$word"
+      redir=0
+    fi
+  done
+  [[ -n "$_dh_col" ]] && _dh_out+=$'\033[0m'
+  _dh_dest=$_dh_out
+}
+
+# Recolor the commands in the named array. The number and the date are not included.
+# shellcheck disable=SC2178,SC2128
+_dirhist_bash_highlight() {
+  local -n _dh_items="$1"
+  local cmd painted
+  local -a out=()
+  (( ${#_dh_items[@]} > 0 )) || return 0
+  for cmd in "${_dh_items[@]}"; do
+    painted=""
+    _dirhist_paint_bash "$cmd" painted
+    out+=("$painted")
+  done
+  _dh_items=("${out[@]}")
+}
+
 # $1 directory filter, empty for every directory
 # $2 newest N, empty for all
 # $3 include substring, empty to keep every command
 # $4 1 to print a directory header when it changes
 # $5 name of an array of substrings to skip. Omit it to skip nothing.
 # $6 1 to print each command once, keeping its latest copy
+# $7 1 or 0 to force command highlighting, empty to follow [options]
 # Return 1 when nothing is selected.
 _dirhist_render() {
-  local filter="$1" limit="$2" pattern="$3" headers="$4" unique="${6:-0}"
-  local i d theme use_color=0 pos total start k last="" cmd ex skip p
-  local -a pick=() pick_n=() _dh_no_ex=() upos=() npick=() npick_n=()
+  local filter="$1" limit="$2" pattern="$3" headers="$4" unique="${6:-0}" highlight="${7:-}"
+  local i d theme use_color=0 pos total start k last="" cmd ex skip p do_hl=0 hi=0
+  local -a pick=() pick_n=() _dh_no_ex=() upos=() npick=() npick_n=() show_cmd=()
   local -A tally=() uniq_seen=()
   local -n _dh_excludes="${5:-_dh_no_ex}"
   local precomputed=0
+  if _dirhist_highlight_on "$highlight"; then
+    do_hl=1
+  fi
   # History asks for one directory and sometimes only its newest N.
   # -u has to see every match before it keeps the latest, so it skips that ring.
   # Grep still filters after the scan, so it keeps every command of that scope.
@@ -274,10 +677,22 @@ _dirhist_render() {
     if [[ -t 1 ]] && _dirhist_option_on color; then
       use_color=1
     fi
+    if [[ "$do_hl" == 1 ]]; then
+      show_cmd=("${_dirhist_e_cmd[@]}")
+      if ! _dirhist_bash_highlight show_cmd; then
+        do_hl=0
+      fi
+    fi
     for (( pos=0; pos<total; pos++ )); do
-      _dirhist_print_entry "${_dirhist_e_num[pos]}" \
-        "${_dirhist_e_date[pos]}" "${_dirhist_e_time[pos]}" "${_dirhist_e_cmd[pos]}" \
-        "$use_color" "$theme"
+      if [[ "$do_hl" == 1 ]]; then
+        _dirhist_print_entry "${_dirhist_e_num[pos]}" \
+          "${_dirhist_e_date[pos]}" "${_dirhist_e_time[pos]}" "${show_cmd[pos]}" \
+          "$use_color" "$theme" 1
+      else
+        _dirhist_print_entry "${_dirhist_e_num[pos]}" \
+          "${_dirhist_e_date[pos]}" "${_dirhist_e_time[pos]}" "${_dirhist_e_cmd[pos]}" \
+          "$use_color" "$theme"
+      fi
     done
     return 0
   fi
@@ -332,6 +747,15 @@ _dirhist_render() {
   if [[ -t 1 ]] && _dirhist_option_on color; then
     use_color=1
   fi
+  if [[ "$do_hl" == 1 ]]; then
+    for (( pos=start; pos<total; pos++ )); do
+      show_cmd+=("${_dirhist_e_cmd[${pick[pos]}]}")
+    done
+    if ! _dirhist_bash_highlight show_cmd; then
+      do_hl=0
+    fi
+  fi
+  hi=0
   for (( pos=start; pos<total; pos++ )); do
     k="${pick[pos]}"
     if [[ "$headers" == 1 && "${_dirhist_e_dir[k]}" != "$last" ]]; then
@@ -339,12 +763,24 @@ _dirhist_render() {
       last="${_dirhist_e_dir[k]}"
     fi
     if [[ "$unique" == 1 ]]; then
-      builtin printf '%s\n' "${_dirhist_e_cmd[k]}"
+      if [[ "$do_hl" == 1 ]]; then
+        builtin printf '%s\033[0m\n' "${show_cmd[hi]}"
+      else
+        builtin printf '%s\n' "${_dirhist_e_cmd[k]}"
+      fi
+      hi=$((hi + 1))
       continue
     fi
-    _dirhist_print_entry "${pick_n[pos]}" \
-      "${_dirhist_e_date[k]}" "${_dirhist_e_time[k]}" "${_dirhist_e_cmd[k]}" \
-      "$use_color" "$theme"
+    if [[ "$do_hl" == 1 ]]; then
+      _dirhist_print_entry "${pick_n[pos]}" \
+        "${_dirhist_e_date[k]}" "${_dirhist_e_time[k]}" "${show_cmd[hi]}" \
+        "$use_color" "$theme" 1
+    else
+      _dirhist_print_entry "${pick_n[pos]}" \
+        "${_dirhist_e_date[k]}" "${_dirhist_e_time[k]}" "${_dirhist_e_cmd[k]}" \
+        "$use_color" "$theme"
+    fi
+    hi=$((hi + 1))
   done
 }
 
@@ -761,7 +1197,8 @@ _dirhist_ensure_config() {
 #
 # [options]
 # date, color, and status_color accept on or off. All default to on.
-# color colors history. status_color colors the on, off, history, and config labels.
+# color colors the number and the date. status_color colors the on, off, history, and config labels.
+# highlight colors only the command in Solarized (dark). on or off. Unset means off.
 # theme is crimson, ocean, forest, amber, or violet. Default is crimson.
 # dirhist themes shows a sample of each theme.
 # date writes [YYYY-MM-DD]=[HH:MM:SS]──► before each command.
@@ -784,6 +1221,7 @@ _dirhist_ensure_config() {
 date = on
 color = on
 status_color = on
+highlight = on
 theme = crimson
 
 [global]
@@ -980,11 +1418,11 @@ _dirhist_resolve_dir() {
 }
 
 _dirhist_show_history() {
-  local dir="$1" limit="${2:-}" unique="${3:-0}"
+  local dir="$1" limit="${2:-}" unique="${3:-0}" highlight="${4:-}"
   _dirhist_ensure_home || return 1
   {
     flock -s 9 || true
-    if ! _dirhist_render "$dir" "$limit" "" 0 "" "$unique"; then
+    if ! _dirhist_render "$dir" "$limit" "" 0 "" "$unique" "$highlight"; then
       builtin printf 'dirhist: no history in %s\n' "$dir" >&2
       return 1
     fi
@@ -1032,11 +1470,29 @@ _dirhist_themes_cmd() {
 }
 
 _dirhist_history_cmd() {
-  local limit="" dir unique=0
+  local limit="" dir unique=0 highlight="" token
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -u|--unique)
         unique=1
+        shift
+        ;;
+      -H|--highlight)
+        highlight=1
+        shift
+        ;;
+      --no-highlight)
+        highlight=0
+        shift
+        ;;
+      -[Hu]*)
+        token=${1#-}
+        if [[ ! "$token" =~ ^[Hu]+$ ]]; then
+          builtin printf 'dirhist: unknown history option: %s\n' "$1" >&2
+          return 2
+        fi
+        [[ "$token" == *H* ]] && highlight=1
+        [[ "$token" == *u* ]] && unique=1
         shift
         ;;
       -n)
@@ -1073,11 +1529,11 @@ _dirhist_history_cmd() {
   else
     dir=$(_dirhist_resolve_dir "$*") || return 1
   fi
-  _dirhist_show_history "$dir" "$limit" "$unique"
+  _dirhist_show_history "$dir" "$limit" "$unique" "$highlight"
 }
 
 _dirhist_grep_cmd() {
-  local all=0 unique=0 dir pat="" word
+  local all=0 unique=0 highlight="" dir pat="" word token
   local -a excludes=() includes=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1094,6 +1550,14 @@ _dirhist_grep_cmd() {
         unique=1
         shift
         ;;
+      -H|--highlight)
+        highlight=1
+        shift
+        ;;
+      --no-highlight)
+        highlight=0
+        shift
+        ;;
       -v|--invert-match|-av|-va)
         [[ "$1" == -av || "$1" == -va ]] && all=1
         shift
@@ -1105,6 +1569,17 @@ _dirhist_grep_cmd() {
           return 2
         fi
         excludes+=("$1")
+        shift
+        ;;
+      -[aHu]*)
+        token=${1#-}
+        if [[ ! "$token" =~ ^[aHu]+$ ]]; then
+          builtin printf 'dirhist: unknown grep option: %s\n' "$1" >&2
+          return 2
+        fi
+        [[ "$token" == *a* ]] && all=1
+        [[ "$token" == *u* ]] && unique=1
+        [[ "$token" == *H* ]] && highlight=1
         shift
         ;;
       --)
@@ -1137,13 +1612,13 @@ _dirhist_grep_cmd() {
   {
     flock -s 9 || true
     if [[ "$all" == 1 ]]; then
-      if ! _dirhist_render "" "" "$pat" 1 excludes "$unique"; then
+      if ! _dirhist_render "" "" "$pat" 1 excludes "$unique" "$highlight"; then
         builtin printf 'dirhist: no matches\n' >&2
         return 1
       fi
     else
       dir=$(_dirhist_here) || return 1
-      if ! _dirhist_render "$dir" "" "$pat" 0 excludes "$unique"; then
+      if ! _dirhist_render "$dir" "" "$pat" 0 excludes "$unique" "$highlight"; then
         builtin printf 'dirhist: no matches\n' >&2
         return 1
       fi
@@ -1325,12 +1800,17 @@ _dirhist_precmd() {
   return 0
 }
 
-# Bat's Solarized (dark) bash colors: command yellow, flags blue,
-# brackets and pipes green, other words base0.
-_DIRHIST_BAT_YELLOW=$'\033[38;2;181;137;0m'
-_DIRHIST_BAT_BLUE=$'\033[38;2;38;139;210m'
-_DIRHIST_BAT_GREEN=$'\033[38;2;133;153;0m'
-_DIRHIST_BAT_BASE0=$'\033[38;2;131;148;150m'
+# Solarized (dark) bash colors. Command highlighting and help lines use these.
+_DIRHIST_HL_YELLOW=$'\033[38;2;181;137;0m'
+_DIRHIST_HL_BLUE=$'\033[38;2;38;139;210m'
+_DIRHIST_HL_GREEN=$'\033[38;2;133;153;0m'
+_DIRHIST_HL_BASE0=$'\033[38;2;131;148;150m'
+_DIRHIST_HL_CYAN=$'\033[38;2;42;161;152m'
+_DIRHIST_HL_MAGENTA=$'\033[38;2;211;54;130m'
+_DIRHIST_HL_BASE01=$'\033[38;2;101;123;131m'
+_DIRHIST_HL_NUM=$'\033[38;2;108;113;196m'
+_DIRHIST_HL_COMMENT=$'\033[38;2;88;110;117m'
+_DIRHIST_HL_RED=$'\033[38;2;220;50;47m'
 
 # $1 output name  $2 color name  $3 SGR  $4 text
 _dirhist_help_emit() {
@@ -1347,7 +1827,7 @@ _dirhist_help_emit() {
   fi
 }
 
-# Color one help usage line the way bat --theme='Solarized (dark)' -l bash does.
+# Color one help usage line in Solarized (dark).
 _dirhist_help_paint() {
   local s="$1" ch word ws
   local help_out="" help_color=""
@@ -1363,16 +1843,16 @@ _dirhist_help_paint() {
         ws+="$ch"
         i=$((i + 1))
       done
-      # bat colors the space before a flag with the flag.
+      # The space before a flag uses the flag color.
       if (( depth == 0 && i < n )) && [[ "${s:i:1}" == "-" ]]; then
-        _dirhist_help_emit help_out help_color "$_DIRHIST_BAT_BLUE" "$ws"
+        _dirhist_help_emit help_out help_color "$_DIRHIST_HL_BLUE" "$ws"
       else
-        _dirhist_help_emit help_out help_color "$_DIRHIST_BAT_BASE0" "$ws"
+        _dirhist_help_emit help_out help_color "$_DIRHIST_HL_BASE0" "$ws"
       fi
       continue
     fi
     if [[ "$ch" == "|" || "$ch" == "[" || "$ch" == "]" ]]; then
-      _dirhist_help_emit help_out help_color "$_DIRHIST_BAT_GREEN" "$ch"
+      _dirhist_help_emit help_out help_color "$_DIRHIST_HL_GREEN" "$ch"
       if [[ "$ch" == "|" ]]; then
         expect=1
       elif [[ "$ch" == "[" ]]; then
@@ -1391,7 +1871,7 @@ _dirhist_help_paint() {
         word+="$ch"
         i=$((i + 1))
       done
-      _dirhist_help_emit help_out help_color "$_DIRHIST_BAT_YELLOW" "$word"
+      _dirhist_help_emit help_out help_color "$_DIRHIST_HL_YELLOW" "$word"
       expect=0
       continue
     fi
@@ -1403,7 +1883,7 @@ _dirhist_help_paint() {
         word+="$ch"
         i=$((i + 1))
       done
-      _dirhist_help_emit help_out help_color "$_DIRHIST_BAT_BLUE" "$word"
+      _dirhist_help_emit help_out help_color "$_DIRHIST_HL_BLUE" "$word"
       continue
     fi
     word=""
@@ -1413,31 +1893,32 @@ _dirhist_help_paint() {
       word+="$ch"
       i=$((i + 1))
     done
-    _dirhist_help_emit help_out help_color "$_DIRHIST_BAT_BASE0" "$word"
+    _dirhist_help_emit help_out help_color "$_DIRHIST_HL_BASE0" "$word"
   done
   [[ -n "$help_color" ]] && help_out+=$'\033[0m'
   builtin printf '%s' "$help_out"
 }
 
 _dirhist_help_row() {
-  local cmd="$1" text="$2" painted width spaces
+  local cmd="$1" text="$2" painted width spaces col=42
   if [[ -t 1 && -z "${NO_COLOR:-}" && -n "$cmd" ]]; then
     painted=$(_dirhist_help_paint "$cmd")
     width=${#cmd}
-    if (( width < 34 )); then
-      spaces=$((34 - width))
+    if (( width < col )); then
+      spaces=$((col - width))
     else
       spaces=0
     fi
     builtin printf '%s%*s %s\n' "$painted" "$spaces" "" "$text"
     return 0
   fi
-  builtin printf '%-34s %s\n' "$cmd" "$text"
+  builtin printf '%-*s %s\n' "$col" "$cmd" "$text"
 }
 
 _dirhist_help() {
   _dirhist_help_row "dirhist" "show this directory's history"
-  _dirhist_help_row "dirhist history [-u] [-n N] [dir|N]" "show this directory's history, or dir's"
+  _dirhist_help_row "dirhist history [-H] [-u] [-n N] [dir|N]" "show this directory's history, or dir's"
+  _dirhist_help_row "" "-H colors the command in Solarized (dark)"
   _dirhist_help_row "" "-n N shows the newest N commands"
   _dirhist_help_row "" "-u prints each command once, with no number or date"
   _dirhist_help_row "dirhist on|start [dir|N]" "record this directory, or directory N"
@@ -1445,8 +1926,9 @@ _dirhist_help() {
   _dirhist_help_row "dirhist rm|remove [dir|N]" "remove dir from the list and delete its commands"
   _dirhist_help_row "dirhist ls|list" "list numbered directories, marked on or off"
   _dirhist_help_row "dirhist status" "show on or off, the history file, and the config"
-  _dirhist_help_row "dirhist grep [-a] [-u] [-v PAT] [PAT]" "search this directory's history"
+  _dirhist_help_row "dirhist grep [-a] [-H] [-u] [-v PAT] [PAT]" "search this directory's history"
   _dirhist_help_row "" "-a searches every directory."
+  _dirhist_help_row "" "-H colors the command in Solarized (dark)"
   _dirhist_help_row "" "-u prints each matching command once, with no number or date"
   _dirhist_help_row "" "-v PAT without another PAT only excludes PAT"
   _dirhist_help_row "" "PAT keeps commands that contain it."
@@ -1465,23 +1947,12 @@ _dirhist_help() {
   _dirhist_help_row "dirhist alias -d" "remove the alias"
   _dirhist_help_row "dirhist version|-V|--version" "print version"
   builtin printf '\n'
-  builtin printf '%s\n' "Recorded directories are listed in ~/.dirhist."
-  builtin printf '%s\n' "dirhist list prints a number for each one. history, on, off, clean, and rm use that number."
-  builtin printf '%s\n' "on and off with no number use the current directory."
-  builtin printf '%s\n' "Commands are appended to ~/.dirhist_history as soon as they run."
-  builtin printf '%s\n' "Each directory's commands stay separate in that file. cd is included."
-  builtin printf '%s\n' "date, color, and status_color are on or off under [options]."
+  builtin printf '%s\n' "A list number stands in for a path. With no number, on, off, and clean use the current directory."
+  builtin printf '%s\n' "Commands are written to ~/.dirhist_history as soon as they run."
+  builtin printf '%s\n' "The config file is ~/.config/dirhist/config."
+  builtin printf '%s\n' "date, color, status_color, and highlight are on or off under [options]. theme is crimson, ocean, forest, amber, or violet."
   builtin printf '%s\n' "max_lines is how many commands to keep per directory. Unset means no limit."
-  builtin printf '%s\n' "A max_lines line in a directory section overwrites [options]. off or 0 means no limit there."
-  builtin printf '%s\n' "theme is crimson, ocean, forest, amber, or violet. Default is crimson."
-  builtin printf '%s\n' "Tab completion fills commands, theme names, and recorded directories."
-  builtin printf '%s\n' "alias under [global] is a command dirhist defines. dirhist alias NAME sets it."
-  builtin printf '%s\n' "Ignore rules are stored in the config file."
-  builtin printf '%s\n' "Prune removes a directory from the list. Its old commands stay in the history."
-  builtin printf '%s\n' "clean deletes this directory's commands. A path or a list number chooses another directory."
-  builtin printf '%s\n' "clean -n N keeps the newest N commands there. Other directories stay."
-  builtin printf '%s\n' "rm|remove deletes that directory's commands. stop|off keeps them."
-  builtin printf '%s\n' "-u prints each command once, with no number or date, and keeps the latest. With -n, N counts those commands."
+  builtin printf '%s\n' "alias under [global] is a command name dirhist defines."
 }
 
 _dirhist_add() {
@@ -1711,7 +2182,7 @@ dirhist() {
     shift
   fi
   case "$op" in
-    history|-u|--unique|-n|-n*)
+    history|-u|--unique|-H|--highlight|--no-highlight|-[Hu]*|-n|-n*)
       if [[ "$op" == history ]]; then
         _dirhist_history_cmd "$@"
       else
@@ -1874,12 +2345,12 @@ _dirhist_complete() {
   fi
 
   if (( cword <= 1 )); then
-    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune clean alias help version -V --version -u --unique -n" "$cur"
+    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune clean alias help version -V --version -H --highlight --no-highlight -u --unique -n" "$cur"
     return 0
   fi
 
   case "${words[1]}" in
-    history|-u|--unique|-n|-n*)
+    history|-u|--unique|-H|--highlight|--no-highlight|-[Hu]*|-n|-n*)
       _dirhist_complete_history
       ;;
     rm|remove|on|start|off|stop)
@@ -1937,7 +2408,7 @@ _dirhist_complete_history() {
   fi
   local flags="-n"
   if [[ "${words[1]}" != clean ]]; then
-    flags="-n -u --unique"
+    flags="-n -H --highlight --no-highlight -u --unique"
   fi
   if [[ "$cur" == -* ]]; then
     _dirhist_complete_words "$flags" "$cur"
@@ -1947,7 +2418,7 @@ _dirhist_complete_history() {
   if [[ -z "$cur" ]]; then
     COMPREPLY+=("-n")
     if [[ "${words[1]}" != clean ]]; then
-      COMPREPLY+=("-u")
+      COMPREPLY+=("-H" "-u")
     fi
   fi
   compopt -o filenames 2>/dev/null || true
@@ -1960,7 +2431,7 @@ _dirhist_complete_grep() {
       ;;
   esac
   if [[ -z "$cur" || "$cur" == -* ]]; then
-    _dirhist_complete_words "-a --all -u --unique -au -ua -v --invert-match -av -va" "$cur"
+    _dirhist_complete_words "-a --all -H --highlight --no-highlight -u --unique -au -ua -v --invert-match -av -va" "$cur"
   fi
 }
 
