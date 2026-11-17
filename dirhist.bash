@@ -16,6 +16,8 @@
 # Extra ignore rules are read from ~/.config/dirhist/config.
 # [options] date, color, and status_color are on or off. All default to on.
 # color colors the number and the date. highlight colors the command in Solarized (dark).
+# fzf under [options] is the history menu. Default is on. --fzf and --no-fzf set it.
+# bind under [options] is its key. Default is alt-r. off disables it.
 # status_color colors the on, off, history, and config labels.
 # theme is crimson, ocean, forest, amber, or violet. Default is crimson.
 # dirhist themes prints a sample of each theme.
@@ -27,7 +29,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   exit 1
 fi
 
-DIRHIST_VERSION=v1.0.5
+DIRHIST_VERSION=v1.0.6
 DIRHIST_REGISTRY="${DIRHIST_REGISTRY:-$HOME/.dirhist}"
 DIRHIST_HISTORY="${DIRHIST_HISTORY:-$HOME/.dirhist_history}"
 DIRHIST_LOCK="${DIRHIST_LOCK:-$HOME/.dirhist.lock}"
@@ -1199,6 +1201,8 @@ _dirhist_ensure_config() {
 # date, color, and status_color accept on or off. All default to on.
 # color colors the number and the date. status_color colors the on, off, history, and config labels.
 # highlight colors only the command in Solarized (dark). on or off. Unset means off.
+# fzf is the history menu. on or off. Default is on. --fzf and --no-fzf set it.
+# bind is the fzf history key. Default is alt-r. alt-x and ctrl-x work. off disables it.
 # theme is crimson, ocean, forest, amber, or violet. Default is crimson.
 # dirhist themes shows a sample of each theme.
 # date writes [YYYY-MM-DD]=[HH:MM:SS]──► before each command.
@@ -1223,6 +1227,8 @@ color = on
 status_color = on
 highlight = on
 theme = crimson
+fzf = on
+bind = alt-r
 
 [global]
 # alias = dh
@@ -1754,15 +1760,29 @@ _dirhist_init() {
 }
 
 _dirhist_debug() {
-  local was_armed="${_dirhist_armed:-0}"
+  local was_armed="${_dirhist_armed:-0}" frame
 
   if declare -F _dirhist_previous_debug >/dev/null 2>&1; then
     _dirhist_previous_debug || true
   fi
 
-  # Tab-completion runs commands through DEBUG. Stay armed for the real command.
+  # Tab-completion and the fzf widget are not commands the user ran.
+  # Stay armed so the next real command is still recorded.
   if [[ -n "${COMP_LINE:-}" ]]; then
     return 0
+  fi
+  case "${BASH_COMMAND:-}" in
+    _dirhist_fzf_widget|_dirhist_fzf_widget\ *) return 0 ;;
+  esac
+  for frame in "${FUNCNAME[@]}"; do
+    [[ "$frame" == _dirhist_fzf_widget ]] && return 0
+  done
+  if [[ "${_dirhist_in_widget:-0}" == 1 ]]; then
+    # fzf runs in a subshell. An interrupt leaves the flag set in the main shell.
+    if [[ "${BASH_SUBSHELL:-0}" -gt 0 ]]; then
+      return 0
+    fi
+    _dirhist_in_widget=0
   fi
   [[ "$was_armed" == 1 ]] || return 0
   _dirhist_armed=0
@@ -1945,11 +1965,14 @@ _dirhist_help() {
   _dirhist_help_row "" "-n N keeps the newest N commands"
   _dirhist_help_row "dirhist alias [NAME]" "print or set the command alias"
   _dirhist_help_row "dirhist alias -d" "remove the alias"
+  _dirhist_help_row "dirhist --fzf|--no-fzf" "turn the fzf history menu on or off"
   _dirhist_help_row "dirhist version|-V|--version" "print version"
   builtin printf '\n'
   builtin printf '%s\n' "A list number stands in for a path. With no number, on, off, and clean use the current directory."
   builtin printf '%s\n' "Commands are written to ~/.dirhist_history as soon as they run."
   builtin printf '%s\n' "The config file is ~/.config/dirhist/config."
+  builtin printf '%s\n' "fzf under [options] is the history menu. Default is on. --fzf and --no-fzf set it."
+  builtin printf '%s\n' "bind under [options] is its key. Default is alt-r. off disables it."
   builtin printf '%s\n' "date, color, status_color, and highlight are on or off under [options]. theme is crimson, ocean, forest, amber, or violet."
   builtin printf '%s\n' "max_lines is how many commands to keep per directory. Unset means no limit."
   builtin printf '%s\n' "alias under [global] is a command name dirhist defines."
@@ -2235,6 +2258,12 @@ dirhist() {
     alias)
       _dirhist_alias_cmd "$@"
       ;;
+    --fzf)
+      _dirhist_fzf_set on "$@"
+      ;;
+    --no-fzf)
+      _dirhist_fzf_set off "$@"
+      ;;
     version|-V|--version)
       if [[ $# -gt 0 ]]; then
         builtin printf 'dirhist: version takes no arguments\n' >&2
@@ -2345,7 +2374,7 @@ _dirhist_complete() {
   fi
 
   if (( cword <= 1 )); then
-    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune clean alias help version -V --version -H --highlight --no-highlight -u --unique -n" "$cur"
+    _dirhist_complete_words "on start off stop remove list status history grep themes init ignore prune clean alias help version -V --version -H --highlight --no-highlight -u --unique -n --fzf --no-fzf" "$cur"
     return 0
   fi
 
@@ -2378,7 +2407,7 @@ _dirhist_complete() {
         _dirhist_complete_words "-d --delete" "$cur"
       fi
       ;;
-    version|-V|--version)
+    version|-V|--version|--fzf|--no-fzf)
       return 0
       ;;
   esac
@@ -2552,6 +2581,189 @@ _dirhist_alias_cmd() {
   builtin printf 'dirhist: alias %s\n' "$name"
 }
 
+# Print the readline key sequence for a bind value. Return 1 when it is unusable.
+# alt-r, meta-r, and m-r are Alt. ctrl-r and control-r are Control.
+_dirhist_bind_keyseq() {
+  local spec="${1:-}" chord
+  spec="${spec//[[:space:]]/}"
+  case "$spec" in
+    alt-*|meta-*|m-*)
+      chord="${spec#*-}"
+      [[ "$chord" =~ ^.$ ]] || return 1
+      builtin printf '\\e%s\n' "$chord"
+      ;;
+    ctrl-*|control-*|c-*)
+      chord="${spec#*-}"
+      [[ "$chord" =~ ^.$ ]] || return 1
+      builtin printf '\\C-%s\n' "$chord"
+      ;;
+    \\*)
+      # Config values are lowercased, so \C-x arrives as \c-x.
+      if [[ "$spec" == \\c-* ]]; then
+        builtin printf '\\C-%s\n' "${spec:3}"
+      else
+        builtin printf '%s\n' "$spec"
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Newest unique command for this directory first, each ended by NUL.
+# Trailing spaces are ignored, matching dirhist -u.
+_dirhist_unique_nul() {
+  local dir i cmd
+  local -a pick=()
+  local -A seen=()
+  dir=$(_dirhist_here) || return 1
+  _dirhist_load_entries "$dir"
+  for (( i=${#_dirhist_e_cmd[@]} - 1; i >= 0; i-- )); do
+    cmd="${_dirhist_e_cmd[i]}"
+    cmd="${cmd%"${cmd##*[![:space:]]}"}"
+    [[ -n "${seen["$cmd"]+x}" ]] && continue
+    seen["$cmd"]=1
+    pick+=("$cmd")
+  done
+  for cmd in "${pick[@]}"; do
+    builtin printf '%s\0' "$cmd"
+  done
+}
+
+# Put the chosen command on the readline line. Alt-r by default.
+# Does not run it. The DEBUG hook ignores this function.
+_dirhist_fzf_widget() {
+  _dirhist_in_widget=1
+  local choice
+  if ! command -v fzf >/dev/null 2>&1; then
+    _dirhist_in_widget=0
+    builtin printf '\ndirhist: install fzf\n' >&2
+    return 0
+  fi
+  choice=$(
+    _dirhist_unique_nul | fzf --read0 --height=40% --layout=reverse \
+      --prompt='dirhist> ' --query="${READLINE_LINE:-}" --cycle
+  ) || choice=
+  _dirhist_in_widget=0
+  [[ -n "$choice" ]] || return 0
+  READLINE_LINE=$choice
+  READLINE_POINT=${#choice}
+}
+
+# Write key = value under [options]. A missing file is created first.
+# An existing line is replaced. Duplicates are dropped.
+_dirhist_option_write() {
+  local key="$1" value="$2" tmp line trimmed header scope="" mode="" has=0 wrote=0
+  _dirhist_ensure_config || return 1
+  mode=$(stat -c '%a' "$DIRHIST_CONFIG" 2>/dev/null || true)
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed=$(_dirhist_trim "$line")
+    if [[ -n "$trimmed" ]] && header=$(_dirhist_config_header "$trimmed"); then
+      scope=$header
+      continue
+    fi
+    [[ -z "$trimmed" || "$trimmed" == \#* ]] && continue
+    [[ -z "$scope" || "$scope" == options ]] || continue
+    if [[ "$trimmed" =~ ^([A-Za-z][A-Za-z0-9_]*)[[:space:]]*(=|[[:space:]]) ]]; then
+      [[ "${BASH_REMATCH[1],,}" == "$key" ]] && has=1
+    fi
+  done < "$DIRHIST_CONFIG"
+
+  tmp=$(mktemp) || return 1
+  scope=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed=$(_dirhist_trim "$line")
+    if [[ -n "$trimmed" ]] && header=$(_dirhist_config_header "$trimmed"); then
+      scope=$header
+      builtin printf '%s\n' "$line" >> "$tmp"
+      if [[ "$has" == 0 && "$scope" == options && "$wrote" == 0 ]]; then
+        builtin printf '%s = %s\n' "$key" "$value" >> "$tmp"
+        wrote=1
+      fi
+      continue
+    fi
+    if [[ ( -z "$scope" || "$scope" == options ) && -n "$trimmed" && "$trimmed" != \#* ]]; then
+      if [[ "$trimmed" =~ ^([A-Za-z][A-Za-z0-9_]*)[[:space:]]*(=|[[:space:]]) ]]; then
+        if [[ "${BASH_REMATCH[1],,}" == "$key" ]]; then
+          if [[ "$wrote" == 0 ]]; then
+            builtin printf '%s = %s\n' "$key" "$value" >> "$tmp"
+            wrote=1
+          fi
+          continue
+        fi
+      fi
+    fi
+    builtin printf '%s\n' "$line" >> "$tmp"
+  done < "$DIRHIST_CONFIG"
+  if [[ "$wrote" == 0 ]]; then
+    builtin printf '\n[options]\n%s = %s\n' "$key" "$value" >> "$tmp"
+  fi
+  mv -f -- "$tmp" "$DIRHIST_CONFIG" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  if [[ -n "$mode" ]]; then
+    chmod "$mode" "$DIRHIST_CONFIG" 2>/dev/null || true
+  fi
+}
+
+# --fzf and --no-fzf store fzf under [options] and apply it in this shell.
+_dirhist_fzf_set() {
+  local value="$1" flag
+  shift
+  if [[ "$value" == on ]]; then
+    flag=--fzf
+  else
+    flag=--no-fzf
+  fi
+  if [[ $# -gt 0 ]]; then
+    builtin printf 'dirhist: %s takes no arguments\n' "$flag" >&2
+    return 2
+  fi
+  _dirhist_option_write fzf "$value" || return 1
+  _dirhist_apply_bind || true
+  builtin printf 'dirhist: fzf %s\n' "$value"
+  # An interactive shell already printed this while binding the key.
+  if [[ "$value" == on && $- != *i* ]] && ! command -v fzf >/dev/null 2>&1; then
+    builtin printf 'dirhist: install fzf\n' >&2
+  fi
+}
+
+# Bind the configured key in an interactive shell.
+# fzf defaults to on. bind defaults to alt-r. Either off skips the key.
+_dirhist_apply_bind() {
+  local spec key
+  [[ $- == *i* ]] || return 0
+  if [[ -n "${_dirhist_bind_seq:-}" ]]; then
+    bind -r "$_dirhist_bind_seq" 2>/dev/null || true
+    _dirhist_bind_seq=
+  fi
+  if ! _dirhist_option_on fzf; then
+    return 0
+  fi
+  spec=$(_dirhist_config_value bind)
+  if [[ -z "$spec" ]]; then
+    spec=alt-r
+  fi
+  case "$spec" in
+    off|none|no|false|0) return 0 ;;
+  esac
+  if ! key=$(_dirhist_bind_keyseq "$spec"); then
+    builtin printf 'dirhist: invalid bind: %s\n' "$spec" >&2
+    return 0
+  fi
+  if ! bind -x "\"${key}\": _dirhist_fzf_widget"; then
+    builtin printf 'dirhist: invalid bind: %s\n' "$spec" >&2
+    return 0
+  fi
+  _dirhist_bind_seq=$key
+  if ! command -v fzf >/dev/null 2>&1; then
+    builtin printf 'dirhist: install fzf\n' >&2
+  fi
+}
+
 _dirhist_install
 # Always apply, including an empty name, so a removed config line drops the old alias.
 _dirhist_apply_alias "$(_dirhist_config_alias)" || true
+_dirhist_apply_bind || true

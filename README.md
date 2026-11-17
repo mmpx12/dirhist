@@ -50,6 +50,7 @@ dirhist clean [-n N] [dir|N]               delete this directory's commands, or 
                                            -n N keeps the newest N commands
 dirhist alias [NAME]                       print or set the command alias
 dirhist alias -d                           remove the alias
+dirhist --fzf|--no-fzf                     turn the fzf history menu on or off
 dirhist version|-V|--version               print version
 ```
 
@@ -96,6 +97,8 @@ color = on
 status_color = on
 highlight = on
 theme = crimson
+fzf = on
+bind = alt-r
 max_lines = 500
 
 [global]
@@ -116,6 +119,8 @@ max_lines = 50
 - `theme` is `crimson`, `ocean`, `forest`, `amber`, or `violet`. The default is `crimson`. The old names `history` and `ember` still select `crimson`.
 - `max_lines` is how many commands to keep per directory. Unset means no limit. A `max_lines` line in a directory section overwrites `[options]` for that directory. `off` or `0` there means no limit.
 - `alias` under `[global]` is a command name `dirhist` defines, for example `alias = dh`. It is not an ignore pattern. `dirhist alias dh` writes that line.
+- `fzf` under `[options]` is the history menu. `on` or `off`. Unset means on. `dirhist --fzf` and `dirhist --no-fzf` store that line and apply it in this shell. With `fzf` missing, dirhist prints `install fzf`.
+- `bind` under `[options]` is the menu key. The default is `alt-r`. `off` disables it. `alt-x` and `ctrl-x` work too. The menu lists this directory's commands, one copy each, newest first. Choosing one puts it on the prompt.
 
 Help usage lines use Solarized (dark). Descriptions stay the terminal color. Set `NO_COLOR` to leave help plain.
 
